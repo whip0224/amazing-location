@@ -113,9 +113,17 @@ export default function App() {
     setExpandedCards(prev => prev.includes(id) ? prev.filter(cardId => cardId !== id) : [...prev, id]);
   };
 
-  const openInGoogleMaps = (place: GooglePlace) => {
+ const openInGoogleMaps = (place: GooglePlace) => {
     const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.formattedAddress)}&query_place_id=${place.id}`;
-    window.open(url, '_blank');
+    
+    // 建立一個隱形的 <a> 標籤，模擬真實點擊來強迫系統跳轉
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const renderOpeningHours = (hours?: GooglePlace['regularOpeningHours']) => {
