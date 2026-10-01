@@ -2,11 +2,29 @@ import { useState, useEffect } from 'react';
 // 新增：把剛剛建立的字典檔引入進來！
 import { cityTranslationMap } from './cityTranslations';
 
+// 計算兩點經緯度直線距離的公式 (回傳單位：公里)
+const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  const R = 6371; // 地球半徑 (公里)
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c; 
+};
+
 // --- 資料結構 ---
 interface GooglePlace {
   id: string;
   displayName: { text: string };
   formattedAddress: string;
+  // 👇 補上這個經緯度結構
+  location?: {
+    latitude: number;
+    longitude: number;
+  };
   addressComponents: {
     longText: string;
     types: string[];
@@ -30,7 +48,95 @@ export default function App() {
   const [listSearchQuery, setListSearchQuery] = useState(''); 
   const [selectedCountryTab, setSelectedCountryTab] = useState<string>('全部'); 
   const [expandedCards, setExpandedCards] = useState<string[]>([]);
+  const [centerId, setCenterId] = useState<string | null>(null);
+  const [nearbyIds, setNearbyIds] = useState<string[]>([]);
 
+  // 假設 places 是你目前儲存的所有地點狀態 (state)
+  const findNearbySavedPlaces = (targetPlace: GooglePlace) => {
+    if (centerId === targetPlace.id) {
+      setCenterId(null);
+      setNearbyIds([]);
+      return;
+    }    
+    const RADIUS_KM = 2; 
+
+    // 👉 變更為 savedPlaces
+    const nearbyPlaces = savedPlaces.filter(place => { 
+      if (place.id === targetPlace.id) return false;
+
+      // 檢查 location 是否存在
+      if (!place.location?.latitude || !targetPlace.location?.latitude) return false;
+
+      const distance = calculateDistance(
+        targetPlace.location.latitude,
+        targetPlace.location.longitude,
+        place.location.latitude,
+        place.location.longitude
+      );
+
+      return distance <= RADIUS_KM;
+    });
+
+    setCenterId(targetPlace.id);
+    setNearbyIds(nearbyPlaces.map(p => p.id));
+  };
+
+  // --- 尋找附近分店功能 ---
+  const handleFindBranches = async (targetPlace: GooglePlace) => {
+    // 1. 簡單過濾店名 (把 "星巴克-台北車站店" 切割，只取主品牌名)
+    const brandName = targetPlace.displayName.text.split('-')[0].split('(')[0].split(' ')[0].trim();
+    
+    // 2. 切換到搜尋分頁並填入搜尋框
+    setActiveTab('search');
+    setSearchQuery(brandName);
+    
+    // 3. 確保有座標才能找附近
+    if (!targetPlace.location?.latitude) {
+      alert('此地點缺少座標資訊，請直接使用手動搜尋！');
+      return;
+    }
+
+    // 4. 開始呼叫 Google API 找分店 (限定 5 公里內)
+    setIsSearching(true);
+    setResults([]);
+    setSelectedLocation(null);
+
+    try {
+      const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+      const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.addressComponents,places.nationalPhoneNumber,places.rating,places.userRatingCount,places.regularOpeningHours,places.location'
+        },
+        body: JSON.stringify({ 
+          textQuery: brandName, 
+          languageCode: 'zh-TW', 
+          maxResultCount: 10,
+          locationBias: {
+            circle: {
+              center: {
+                latitude: targetPlace.location.latitude,
+                longitude: targetPlace.location.longitude
+              },
+              radius: 5000.0 // 尋找 5 公里內的分店
+            }
+          }
+        })
+      });
+      const data = await response.json();
+      setResults(data.places || []);
+    } catch (error) {
+      console.error("API 錯誤:", error);
+      alert("搜尋失敗，請確認 API 金鑰");
+    } finally {
+      setIsSearching(false);
+    }
+  };
+  
+  
+  
   useEffect(() => {
     const localData = localStorage.getItem('amazing_locations');
     if (localData) {
@@ -74,7 +180,7 @@ export default function App() {
         headers: {
           'Content-Type': 'application/json',
           'X-Goog-Api-Key': apiKey,
-          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.addressComponents,places.nationalPhoneNumber,places.rating,places.userRatingCount,places.regularOpeningHours'
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.addressComponents,places.nationalPhoneNumber,places.rating,places.userRatingCount,places.regularOpeningHours,places.location'
         },
         body: JSON.stringify({ textQuery: searchQuery, languageCode: 'zh-TW', maxResultCount: 5 })
       });
@@ -296,7 +402,7 @@ export default function App() {
                     className="ml-2 mb-2 whitespace-nowrap px-3 py-2 text-sm font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-full transition-colors flex items-center gap-1"
                   >
                     <span>📥</span> 匯出 TXT
-                  </button>
+                  </button>           
                 </div>
               </>
             )}
@@ -318,15 +424,33 @@ export default function App() {
                     <div className="grid gap-3">
                       {places.map(place => {
                         const isExpanded = expandedCards.includes(place.id);
+                        
+                        const isCenter = centerId === place.id;
+                        const isNearby = nearbyIds.includes(place.id);
+
                         return (
-                          <div key={place.id} className="bg-white rounded-2xl shadow-sm ring-1 ring-gray-200 overflow-hidden transition-all duration-300">
+                          <div key={place.id} className={`rounded-2xl shadow-sm ring-1 overflow-hidden transition-all duration-300 ${isCenter ? 'ring-blue-500 bg-blue-50' : isNearby ? 'ring-yellow-400 bg-yellow-50' : 'ring-gray-200 bg-white'}`}>
                             
                             <div className="p-4 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-gray-50" onClick={() => toggleCard(place.id)}>
                               <h3 className="font-bold text-base text-gray-900 leading-snug flex-1 truncate">
+                                {isCenter && <span className="mr-1">📍</span>}
+                                {isNearby && <span className="mr-1">⭐</span>}
                                 {place.displayName.text}
                               </h3>
+                              
                               <div className="flex items-center gap-2 shrink-0">
                                 <span className={`text-gray-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}>▼</span>
+                                
+                                <button 
+                                  onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    findNearbySavedPlaces(place); 
+                                  }}
+                                  className={`px-3 py-1 rounded text-white ${isCenter ? 'bg-gray-400' : 'bg-green-500'}`}
+                                >
+                                  {isCenter ? '❌ 取消尋找' : '📍 找附近'}
+                                </button>
+                                
                                 <button 
                                   onClick={(e) => { e.stopPropagation(); handleDelete(place.id, place.displayName.text); }}
                                   className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
@@ -336,6 +460,7 @@ export default function App() {
                               </div>
                             </div>
 
+                            {/* 展開的內容 */}
                             {isExpanded && (
                               <div className="px-4 pb-4 pt-1 border-t border-gray-100 bg-gray-50/50">
                                 <div className="text-xs text-gray-500 flex items-center gap-2 mb-3">
@@ -348,12 +473,26 @@ export default function App() {
                                   </div>
                                   {renderOpeningHours(place.regularOpeningHours)}
                                 </div>
-                                <button
-                                  onClick={() => openInGoogleMaps(place)}
-                                  className="mt-3 w-full py-2.5 bg-blue-100 text-blue-700 font-bold text-sm rounded-xl hover:bg-blue-200 transition-colors flex justify-center items-center gap-2"
-                                >
-                                  <span>🗺️</span> 在 Google 地圖中開啟
-                                </button>
+                                
+                                {/* 這裡將「地圖」跟「找分店」按鈕放在一起 */}
+                                <div className="mt-3 flex gap-2">
+                                  <button
+                                    onClick={() => openInGoogleMaps(place)}
+                                    className="flex-1 py-2.5 bg-blue-100 text-blue-700 font-bold text-sm rounded-xl hover:bg-blue-200 transition-colors flex justify-center items-center gap-2"
+                                  >
+                                    <span>🗺️</span> 地圖開啟
+                                  </button>
+                                  
+                                  {/* 請確保你在 App 函數裡有定義 handleFindBranches */}
+                                  {/* 如果還沒定義，可以先把它註解掉以免報錯 */}
+                                  <button
+                                    onClick={() => handleFindBranches(place)}
+                                    className="flex-1 py-2.5 bg-purple-100 text-purple-700 font-bold text-sm rounded-xl hover:bg-purple-200 transition-colors flex justify-center items-center gap-2"
+                                  >
+                                    <span>🏪</span> 找附近分店
+                                  </button>
+                                </div>
+                                
                               </div>
                             )}
                           </div>
