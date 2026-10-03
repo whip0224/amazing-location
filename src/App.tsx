@@ -36,6 +36,9 @@ interface GooglePlace {
     openNow: boolean;
     weekdayDescriptions: string[];
   };
+  customName?: string;
+  customCity?: string;
+  customTags?: string[];
 }
 
 export default function App() {
@@ -50,6 +53,44 @@ export default function App() {
   const [expandedCards, setExpandedCards] = useState<string[]>([]);
   const [centerId, setCenterId] = useState<string | null>(null);
   const [nearbyIds, setNearbyIds] = useState<string[]>([]);
+
+
+  // --- 📝 編輯功能狀態 ---
+  const [editingPlace, setEditingPlace] = useState<GooglePlace | null>(null);
+  const [editForm, setEditForm] = useState({ name: '', city: '', tags: '' });
+
+  // 開啟編輯視窗
+  const openEditModal = (place: GooglePlace) => {
+    setEditingPlace(place);
+    setEditForm({
+      // 如果已經有自訂名稱，就用自訂的，否則預設帶入 Google 給的店名
+      name: place.customName || place.displayName.text,
+      // 如果有自訂地區就用自訂的，否則自動計算
+      city: place.customCity || getCountryAndCity(place.addressComponents).city,
+      // 將標籤陣列轉成逗號分隔的字串，方便編輯
+      tags: place.customTags ? place.customTags.join(', ') : ''
+    });
+  };
+
+  // 儲存編輯結果
+  const saveEdit = () => {
+    if (!editingPlace) return;
+    const updatedPlaces = savedPlaces.map(p => {
+      if (p.id === editingPlace.id) {
+        return {
+          ...p,
+          customName: editForm.name,
+          customCity: editForm.city,
+          // 將輸入的字串用逗號切開，去除空白，並過濾掉空字串
+          customTags: editForm.tags.split(',').map(t => t.trim()).filter(t => t !== '')
+        };
+      }
+      return p;
+    });
+    setSavedPlaces(updatedPlaces);
+    localStorage.setItem('amazing_locations', JSON.stringify(updatedPlaces));
+    setEditingPlace(null); // 關閉視窗
+  };
 
   // 假設 places 是你目前儲存的所有地點狀態 (state)
   const findNearbySavedPlaces = (targetPlace: GooglePlace) => {
@@ -281,7 +322,8 @@ export default function App() {
 
   const groupedByCity = displayPlaces.reduce((acc, place) => {
     const { city } = getCountryAndCity(place.addressComponents);
-    const cityKey = city || '其他地區';
+    // 👇 修改這裡：優先使用 customCity，沒有的話才用自動計算的 city
+    const cityKey = place.customCity || city || '其他地區'; 
     if (!acc[cityKey]) acc[cityKey] = [];
     acc[cityKey].push(place);
     return acc;
@@ -432,11 +474,24 @@ export default function App() {
                           <div key={place.id} className={`rounded-2xl shadow-sm ring-1 overflow-hidden transition-all duration-300 ${isCenter ? 'ring-blue-500 bg-blue-50' : isNearby ? 'ring-yellow-400 bg-yellow-50' : 'ring-gray-200 bg-white'}`}>
                             
                             <div className="p-4 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-gray-50" onClick={() => toggleCard(place.id)}>
+                              {/* 把原本的 {place.displayName.text} 替換成以下這樣： */}
                               <h3 className="font-bold text-base text-gray-900 leading-snug flex-1 truncate">
                                 {isCenter && <span className="mr-1">📍</span>}
                                 {isNearby && <span className="mr-1">⭐</span>}
-                                {place.displayName.text}
+                                {/* 👇 優先顯示自訂名稱 */}
+                                {place.customName || place.displayName.text} 
                               </h3>
+
+                              {/* 👇 在 h3 下方加上這個標籤顯示區塊 */}
+                              {place.customTags && place.customTags.length > 0 && (
+                                <div className="flex gap-1 mt-1 flex-wrap">
+                                  {place.customTags.map((tag, idx) => (
+                                    <span key={idx} className="text-[10px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
+                                      #{tag}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                               
                               <div className="flex items-center gap-2 shrink-0">
                                 <span className={`text-gray-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}>▼</span>
@@ -449,8 +504,14 @@ export default function App() {
                                   className={`px-3 py-1 rounded text-white ${isCenter ? 'bg-gray-400' : 'bg-green-500'}`}
                                 >
                                   {isCenter ? '❌ 取消尋找' : '📍 找附近'}
-                                </button>
-                                
+                                </button>                                                                
+                                {/* 把這顆按鈕貼在垃圾桶按鈕的上面 */}
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); openEditModal(place); }}
+                                  className="p-1.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-blue-500 hover:text-white transition-colors"
+                                >
+                                  ✏️
+                                </button>                                
                                 <button 
                                   onClick={(e) => { e.stopPropagation(); handleDelete(place.id, place.displayName.text); }}
                                   className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
@@ -519,6 +580,35 @@ export default function App() {
           </button>
         </div>
       </div>
+
+      {/* === 📝 編輯視窗 (Modal) === */}
+      {editingPlace && (
+        <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl">
+            <h2 className="text-xl font-bold mb-4">✏️ 編輯地點資訊</h2>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-gray-600 mb-1 font-bold">店名 / 景點名稱</label>
+                <input type="text" value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1 font-bold">所屬地區 (可手動分類)</label>
+                <input type="text" value={editForm.city} onChange={e => setEditForm({...editForm, city: e.target.value})} className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1 font-bold">自訂標籤 (用逗號分隔)</label>
+                <input type="text" value={editForm.tags} onChange={e => setEditForm({...editForm, tags: e.target.value})} className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="例如：餐廳, 拉麵, 必去" />
+              </div>
+            </div>
+
+            <div className="mt-6 flex gap-3">
+              <button onClick={() => setEditingPlace(null)} className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200">取消</button>
+              <button onClick={saveEdit} className="flex-1 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700">儲存變更</button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
