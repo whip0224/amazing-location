@@ -53,6 +53,9 @@ export default function App() {
   const [expandedCards, setExpandedCards] = useState<string[]>([]);
   const [centerId, setCenterId] = useState<string | null>(null);
   const [nearbyIds, setNearbyIds] = useState<string[]>([]);
+  const [isExportMode, setIsExportMode] = useState(false);
+  const [selectedExportIds, setSelectedExportIds] = useState<string[]>([]);
+
 
 
   // --- 📝 編輯功能狀態 ---
@@ -329,22 +332,38 @@ export default function App() {
     return acc;
   }, {} as Record<string, GooglePlace[]>);
 
-  const exportToTxt = () => {
-    if (displayPlaces.length === 0) {
-      alert('目前沒有可以匯出的地點！');
-      return;
-    }
-    const textContent = displayPlaces.map(p => p.displayName.text).join('\n');
-    const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `amazing_locations_${new Date().toISOString().slice(0,10)}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
+  const handleRichExport = async () => {
+      if (selectedExportIds.length === 0) {
+        alert('請先選擇至少一個地點！');
+        return;
+      }
+
+      // 1. 抓出所有被選中的地點完整資料
+      const exportData = savedPlaces.filter(p => selectedExportIds.includes(p.id));
+      
+      // 2. 轉成 JSON 字串
+      const jsonString = JSON.stringify(exportData);
+
+      try {
+        // 3. 寫入手機剪貼簿
+        await navigator.clipboard.writeText(jsonString);
+        
+        // 4. 詢問是否直接開啟另一個 PWA (這裡請換成你 Amazing Trip Plan 的真實網址)
+        const targetUrl = 'https://你的-amazing-trip-plan-網址.vercel.app'; 
+        //const targetUrl = 'http://localhost:5173';
+        
+        if (window.confirm(`✅ 已打包 ${exportData.length} 個地點的完整資訊！\n\n是否立即前往 Amazing Trip Plan 進行匯入？`)) {
+          // 重置選擇模式
+          setIsExportMode(false);
+          setSelectedExportIds([]);
+          // 跳轉到另一個 App
+          window.open(targetUrl, '_blank', 'noopener,noreferrer');
+        }
+      } catch (err) {
+        alert('複製失敗，請確認瀏覽器權限！');
+        console.error(err);
+      }
+    };
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-gray-800 pb-24">
@@ -422,29 +441,21 @@ export default function App() {
                     className="w-full rounded-xl bg-white px-4 py-3 text-sm shadow-sm ring-1 ring-gray-200 outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                   />
                 </div>
-
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide flex-1">
-                    {countryTabs.map(tab => (
-                      <button
-                        key={tab}
-                        onClick={() => setSelectedCountryTab(tab)}
-                        className={`whitespace-nowrap px-4 py-2 rounded-full text-sm font-bold transition-all ${
-                          selectedCountryTab === tab 
-                            ? 'bg-gray-900 text-white shadow-md' 
-                            : 'bg-white text-gray-600 ring-1 ring-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        {tab}
+                <div className="ml-2 mb-2 flex items-center gap-2">
+                  {isExportMode ? (
+                    <>
+                      <button onClick={() => { setIsExportMode(false); setSelectedExportIds([]); }} className="whitespace-nowrap px-3 py-2 text-sm font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors">
+                        取消
                       </button>
-                    ))}
-                  </div>
-                  <button 
-                    onClick={exportToTxt}
-                    className="ml-2 mb-2 whitespace-nowrap px-3 py-2 text-sm font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-full transition-colors flex items-center gap-1"
-                  >
-                    <span>📥</span> 匯出 TXT
-                  </button>           
+                      <button onClick={handleRichExport} className="whitespace-nowrap px-3 py-2 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-full transition-colors shadow-md">
+                        傳送 ({selectedExportIds.length})
+                      </button>
+                    </>
+                  ) : (
+                    <button onClick={() => setIsExportMode(true)} className="whitespace-nowrap px-3 py-2 text-sm font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-full transition-colors flex items-center gap-1">
+                      <span>✈️</span> 傳送到 Trip Plan
+                    </button>
+                  )}
                 </div>
               </>
             )}
@@ -473,14 +484,33 @@ export default function App() {
                         return (
                           <div key={place.id} className={`rounded-2xl shadow-sm ring-1 overflow-hidden transition-all duration-300 ${isCenter ? 'ring-blue-500 bg-blue-50' : isNearby ? 'ring-yellow-400 bg-yellow-50' : 'ring-gray-200 bg-white'}`}>
                             
-                            <div className="p-4 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-gray-50" onClick={() => toggleCard(place.id)}>
-                              {/* 把原本的 {place.displayName.text} 替換成以下這樣： */}
-                              <h3 className="font-bold text-base text-gray-900 leading-snug flex-1 truncate">
-                                {isCenter && <span className="mr-1">📍</span>}
-                                {isNearby && <span className="mr-1">⭐</span>}
-                                {/* 👇 優先顯示自訂名稱 */}
-                                {place.customName || place.displayName.text} 
-                              </h3>
+                            <div 
+                              className={`p-4 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-gray-50 ${selectedExportIds.includes(place.id) ? 'bg-blue-50/50' : ''}`} 
+                              onClick={() => {
+                                // 👉 判斷：如果在匯出模式，點擊卡片就是選取；否則就是原本的展開
+                                if (isExportMode) {
+                                  setSelectedExportIds(prev => prev.includes(place.id) ? prev.filter(id => id !== place.id) : [...prev, place.id]);
+                                } else {
+                                  toggleCard(place.id);
+                                }
+                              }}
+                            >
+                              <div className="flex items-center gap-3 flex-1 overflow-hidden">
+                                {/* 👉 只有在匯出模式才顯示這個打勾框 */}
+                                {isExportMode && (
+                                  <div className={`shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors ${selectedExportIds.includes(place.id) ? 'bg-blue-500 border-blue-500' : 'border-gray-300'}`}>
+                                    {selectedExportIds.includes(place.id) && <span className="text-white text-xs">✓</span>}
+                                  </div>
+                                )}
+
+                                <h3 className="font-bold text-base text-gray-900 leading-snug flex-1 truncate">
+                                  {isCenter && <span className="mr-1">📍</span>}
+                                  {isNearby && <span className="mr-1">⭐</span>}
+                                  {place.customName || place.displayName.text}
+                                </h3>
+                              </div>
+
+                              {/* ... 下面的展開箭頭、找附近、編輯、刪除按鈕維持不變 ... */}
 
                               {/* 👇 在 h3 下方加上這個標籤顯示區塊 */}
                               {place.customTags && place.customTags.length > 0 && (
