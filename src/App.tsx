@@ -352,12 +352,11 @@ export default function App() {
         const targetUrl = 'https://amazing-travel.vercel.app'; 
         //const targetUrl = 'http://localhost:5173';
         
-        if (window.confirm(`✅ 已打包 ${exportData.length} 個地點的完整資訊！\n\n是否立即前往 Amazing Trip Plan 進行匯入？`)) {
+        if (window.confirm(`✅ 已選擇了 ${exportData.length} 個地點的完整資訊！\n\n是否確定匯出地點`)) {
           // 重置選擇模式
           setIsExportMode(false);
           setSelectedExportIds([]);
-          // 跳轉到另一個 App
-          window.open(targetUrl, '_blank', 'noopener,noreferrer');
+          alert("✅ 成功匯出！景點資料已複製到剪貼簿。\n\n請手動切換至「AmazingTravel」App，並點擊右上角的「📥 匯入 Location 資料」即可完成！");
         }
       } catch (err) {
         alert('複製失敗，請確認瀏覽器權限！');
