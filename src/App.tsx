@@ -349,7 +349,7 @@ export default function App() {
         await navigator.clipboard.writeText(jsonString);
         
         // 4. 詢問是否直接開啟另一個 PWA (這裡請換成你 Amazing Trip Plan 的真實網址)
-        const targetUrl = 'https://你的-amazing-trip-plan-網址.vercel.app'; 
+        const targetUrl = 'https://amazing-travel.vercel.app'; 
         //const targetUrl = 'http://localhost:5173';
         
         if (window.confirm(`✅ 已打包 ${exportData.length} 個地點的完整資訊！\n\n是否立即前往 Amazing Trip Plan 進行匯入？`)) {
