@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react';
-// 新增：把剛剛建立的字典檔引入進來！
 import { cityTranslationMap } from './cityTranslations';
 
 // 計算兩點經緯度直線距離的公式 (回傳單位：公里)
 const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-  const R = 6371; // 地球半徑 (公里)
+  const R = 6371;
   const dLat = (lat2 - lat1) * (Math.PI / 180);
   const dLon = (lon2 - lon1) * (Math.PI / 180);
   const a =
@@ -18,14 +17,13 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
 // --- 資料結構 ---
 interface GooglePlace {
   id: string;
-  displayName: { text: string };
-  formattedAddress: string;
-  // 👇 補上這個經緯度結構
+  displayName?: { text: string }; // 加上 ? 保護
+  formattedAddress?: string;      // 加上 ? 保護
   location?: {
     latitude: number;
     longitude: number;
   };
-  addressComponents: {
+  addressComponents?: {           // 加上 ? 保護
     longText: string;
     types: string[];
   }[];
@@ -55,27 +53,27 @@ export default function App() {
   const [nearbyIds, setNearbyIds] = useState<string[]>([]);
   const [isExportMode, setIsExportMode] = useState(false);
   const [selectedExportIds, setSelectedExportIds] = useState<string[]>([]);
+  
+  // 新增：紀錄國家分類的折疊狀態 (預設為空，我們在渲染時把未定義視為展開)
+  const [expandedRegions, setExpandedRegions] = useState<Record<string, boolean>>({});
 
-
+  const toggleRegion = (region: string) => {
+    setExpandedRegions(prev => ({ ...prev, [region]: prev[region] === false ? true : false }));
+  };
 
   // --- 📝 編輯功能狀態 ---
   const [editingPlace, setEditingPlace] = useState<GooglePlace | null>(null);
   const [editForm, setEditForm] = useState({ name: '', city: '', tags: '' });
 
-  // 開啟編輯視窗
   const openEditModal = (place: GooglePlace) => {
     setEditingPlace(place);
     setEditForm({
-      // 如果已經有自訂名稱，就用自訂的，否則預設帶入 Google 給的店名
-      name: place.customName || place.displayName.text,
-      // 如果有自訂地區就用自訂的，否則自動計算
-      city: place.customCity || getCountryAndCity(place.addressComponents).city,
-      // 將標籤陣列轉成逗號分隔的字串，方便編輯
+      name: place.customName || place.displayName?.text || '未知名稱',
+      city: place.customCity || getCountryAndCity(place.addressComponents || []).city,
       tags: place.customTags ? place.customTags.join(', ') : ''
     });
   };
 
-  // 儲存編輯結果
   const saveEdit = () => {
     if (!editingPlace) return;
     const updatedPlaces = savedPlaces.map(p => {
@@ -84,7 +82,6 @@ export default function App() {
           ...p,
           customName: editForm.name,
           customCity: editForm.city,
-          // 將輸入的字串用逗號切開，去除空白，並過濾掉空字串
           customTags: editForm.tags.split(',').map(t => t.trim()).filter(t => t !== '')
         };
       }
@@ -92,10 +89,9 @@ export default function App() {
     });
     setSavedPlaces(updatedPlaces);
     localStorage.setItem('amazing_locations', JSON.stringify(updatedPlaces));
-    setEditingPlace(null); // 關閉視窗
+    setEditingPlace(null);
   };
 
-  // 假設 places 是你目前儲存的所有地點狀態 (state)
   const findNearbySavedPlaces = (targetPlace: GooglePlace) => {
     if (centerId === targetPlace.id) {
       setCenterId(null);
@@ -103,12 +99,8 @@ export default function App() {
       return;
     }    
     const RADIUS_KM = 2; 
-
-    // 👉 變更為 savedPlaces
     const nearbyPlaces = savedPlaces.filter(place => { 
       if (place.id === targetPlace.id) return false;
-
-      // 檢查 location 是否存在
       if (!place.location?.latitude || !targetPlace.location?.latitude) return false;
 
       const distance = calculateDistance(
@@ -125,22 +117,22 @@ export default function App() {
     setNearbyIds(nearbyPlaces.map(p => p.id));
   };
 
-  // --- 尋找附近分店功能 ---
   const handleFindBranches = async (targetPlace: GooglePlace) => {
-    // 1. 簡單過濾店名 (把 "星巴克-台北車站店" 切割，只取主品牌名)
-    const brandName = targetPlace.displayName.text.split('-')[0].split('(')[0].split(' ')[0].trim();
+    const displayNameStr = targetPlace.displayName?.text || '';
+    if (!displayNameStr) {
+      alert('此地點缺少名稱，無法搜尋分店！');
+      return;
+    }
+    const brandName = displayNameStr.split('-')[0].split('(')[0].split(' ')[0].trim();
     
-    // 2. 切換到搜尋分頁並填入搜尋框
     setActiveTab('search');
     setSearchQuery(brandName);
     
-    // 3. 確保有座標才能找附近
     if (!targetPlace.location?.latitude) {
       alert('此地點缺少座標資訊，請直接使用手動搜尋！');
       return;
     }
 
-    // 4. 開始呼叫 Google API 找分店 (限定 5 公里內)
     setIsSearching(true);
     setResults([]);
     setSelectedLocation(null);
@@ -164,7 +156,7 @@ export default function App() {
                 latitude: targetPlace.location.latitude,
                 longitude: targetPlace.location.longitude
               },
-              radius: 5000.0 // 尋找 5 公里內的分店
+              radius: 5000.0
             }
           }
         })
@@ -179,8 +171,6 @@ export default function App() {
     }
   };
   
-  
-  
   useEffect(() => {
     const localData = localStorage.getItem('amazing_locations');
     if (localData) {
@@ -188,7 +178,6 @@ export default function App() {
     }
   }, []);
 
-  // --- 核心邏輯：自動翻譯與標準化 ---
   const getCountryAndCity = (components: GooglePlace['addressComponents'] = []) => {
     const country = components.find(c => c.types.includes('country'))?.longText || '';
     let city = components.find(c => 
@@ -199,16 +188,15 @@ export default function App() {
     const normalizedCountry = country.includes('台灣') || country === 'Taiwan' ? '🇹🇼 台灣' :
                               country.includes('日本') || country === 'Japan' ? '🇯🇵 日本' : 
                               country.includes('韓國') || country === 'South Korea' ? '🇰🇷 韓國' :
-                              country || '未知國家';
+                              country || '🌍 其他地區';
 
-    // 執行翻譯與替換 (直接使用外部引入的 cityTranslationMap)
     Object.keys(cityTranslationMap).forEach(engKey => {
       if (city.includes(engKey)) {
         city = city.replace(engKey, cityTranslationMap[engKey]).trim();
       }
     });
 
-    return { country: normalizedCountry, city: city || '其他地區' };
+    return { country: normalizedCountry, city: city || '未分類地區' };
   };
 
   const handleSearch = async (e?: React.FormEvent) => {
@@ -264,16 +252,14 @@ export default function App() {
   };
 
  const openInGoogleMaps = (place: GooglePlace) => {
-    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.formattedAddress)}&query_place_id=${place.id}`;
+    const targetQuery = place.formattedAddress || place.displayName?.text || 'Location';
+    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(targetQuery)}&query_place_id=${place.id}`;
     
-    // 建立一個隱形的 <a> 標籤，模擬真實點擊來強迫系統跳轉
-    const link = document.createElement('a');
-    link.href = url;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+      window.location.href = url;
+    } else {
+      window.open(url, '_blank');
+    }
   };
 
   const renderOpeningHours = (hours?: GooglePlace['regularOpeningHours']) => {
@@ -309,26 +295,24 @@ export default function App() {
     );
   };
 
-  // --- 清單過濾與分組 ---
-  const uniqueCountries = Array.from(new Set(savedPlaces.map(p => getCountryAndCity(p.addressComponents).country))).sort();
-  const countryTabs = ['全部', ...uniqueCountries];
-
+  // --- 清單過濾與國家分組 ---
   const filteredBySearch = savedPlaces.filter(place => {
     if (!listSearchQuery) return true;
     const term = listSearchQuery.toLowerCase();
-    return place.displayName.text.toLowerCase().includes(term) || place.formattedAddress.toLowerCase().includes(term);
+    return (place.displayName?.text || '').toLowerCase().includes(term) || 
+           (place.formattedAddress || '').toLowerCase().includes(term);
   });
 
   const displayPlaces = selectedCountryTab === '全部' 
     ? filteredBySearch 
-    : filteredBySearch.filter(p => getCountryAndCity(p.addressComponents).country === selectedCountryTab);
+    : filteredBySearch.filter(p => getCountryAndCity(p.addressComponents || []).country === selectedCountryTab);
 
-  const groupedByCity = displayPlaces.reduce((acc, place) => {
-    const { city } = getCountryAndCity(place.addressComponents);
-    // 👇 修改這裡：優先使用 customCity，沒有的話才用自動計算的 city
-    const cityKey = place.customCity || city || '其他地區'; 
-    if (!acc[cityKey]) acc[cityKey] = [];
-    acc[cityKey].push(place);
+  // 改為用 Region (國家) 群組
+  const groupedByRegion = displayPlaces.reduce((acc, place) => {
+    const { country } = getCountryAndCity(place.addressComponents || []);
+    const regionKey = country || '🌍 其他地區'; 
+    if (!acc[regionKey]) acc[regionKey] = [];
+    acc[regionKey].push(place);
     return acc;
   }, {} as Record<string, GooglePlace[]>);
 
@@ -338,22 +322,12 @@ export default function App() {
         return;
       }
 
-      // 1. 抓出所有被選中的地點完整資料
       const exportData = savedPlaces.filter(p => selectedExportIds.includes(p.id));
-      
-      // 2. 轉成 JSON 字串
       const jsonString = JSON.stringify(exportData);
 
       try {
-        // 3. 寫入手機剪貼簿
         await navigator.clipboard.writeText(jsonString);
-        
-        // 4. 詢問是否直接開啟另一個 PWA (這裡請換成你 Amazing Trip Plan 的真實網址)
-        const targetUrl = 'https://amazing-travel.vercel.app'; 
-        //const targetUrl = 'http://localhost:5173';
-        
-        if (window.confirm(`✅ 已選擇了 ${exportData.length} 個地點的完整資訊！\n\n是否確定匯出地點`)) {
-          // 重置選擇模式
+        if (window.confirm(`✅ 已選擇了 ${exportData.length} 個地點的完整資訊！\n\n是否確定匯出地點？`)) {
           setIsExportMode(false);
           setSelectedExportIds([]);
           alert("✅ 成功匯出！景點資料已複製到剪貼簿。\n\n請手動切換至「AmazingTravel」App，並點擊右上角的「📥 匯入 Location 資料」即可完成！");
@@ -395,9 +369,9 @@ export default function App() {
             {results.length > 0 && (
               <ul className="absolute z-10 mt-2 w-[calc(100%-2rem)] max-w-md rounded-2xl bg-white py-2 shadow-xl ring-1 ring-black/5 max-h-60 overflow-auto">
                 {results.map((place) => (
-                  <li key={place.id} onClick={() => { setSelectedLocation(place); setResults([]); setSearchQuery(place.displayName.text); }} className="cursor-pointer px-5 py-3 hover:bg-blue-50 border-b border-gray-50 last:border-0">
-                    <div className="font-bold text-gray-900">{place.displayName.text}</div>
-                    <div className="text-xs text-gray-500 truncate mt-1">{place.formattedAddress}</div>
+                  <li key={place.id} onClick={() => { setSelectedLocation(place); setResults([]); setSearchQuery(place.displayName?.text || '未知名稱'); }} className="cursor-pointer px-5 py-3 hover:bg-blue-50 border-b border-gray-50 last:border-0">
+                    <div className="font-bold text-gray-900">{place.displayName?.text || '未知名稱'}</div>
+                    <div className="text-xs text-gray-500 truncate mt-1">{place.formattedAddress || '無詳細地址'}</div>
                   </li>
                 ))}
               </ul>
@@ -405,15 +379,15 @@ export default function App() {
 
             {selectedLocation && (
               <div className="mt-6 rounded-3xl bg-white p-5 shadow-xl ring-1 ring-black/5 animate-in slide-in-from-top-4 fade-in duration-300">
-                <h3 className="text-xl font-bold text-gray-900">{selectedLocation.displayName.text}</h3>
+                <h3 className="text-xl font-bold text-gray-900">{selectedLocation.displayName?.text || '未知名稱'}</h3>
                 <div className="mt-2 flex flex-wrap gap-2 text-sm">
-                  <span className="rounded-md bg-blue-50 text-blue-700 px-2 py-1 font-medium">{getCountryAndCity(selectedLocation.addressComponents).country}</span>
-                  <span className="rounded-md bg-gray-100 px-2 py-1 font-medium text-gray-600">{getCountryAndCity(selectedLocation.addressComponents).city}</span>
+                  <span className="rounded-md bg-blue-50 text-blue-700 px-2 py-1 font-medium">{getCountryAndCity(selectedLocation.addressComponents || []).country}</span>
+                  <span className="rounded-md bg-gray-100 px-2 py-1 font-medium text-gray-600">{getCountryAndCity(selectedLocation.addressComponents || []).city}</span>
                   {selectedLocation.rating && <span className="text-amber-500 font-bold ml-1">⭐ {selectedLocation.rating}</span>}
                 </div>
                 
                 <div className="mt-4 text-sm text-gray-600 bg-gray-50 p-4 rounded-xl border border-gray-100">
-                  <div className="flex items-start"><span className="mr-2">📍</span><span>{selectedLocation.formattedAddress}</span></div>
+                  <div className="flex items-start"><span className="mr-2">📍</span><span>{selectedLocation.formattedAddress || '無詳細地址'}</span></div>
                   {renderOpeningHours(selectedLocation.regularOpeningHours)}
                 </div>
 
@@ -459,138 +433,145 @@ export default function App() {
               </>
             )}
 
-            <div className="space-y-6 mt-2">
-              {Object.keys(groupedByCity).length === 0 ? (
+            {/* 國家分類折疊清單 */}
+            <div className="space-y-4 mt-2">
+              {Object.keys(groupedByRegion).length === 0 ? (
                 <div className="text-center py-20 text-gray-400">
                   <div className="text-4xl mb-4">🧳</div>
                   <p>{savedPlaces.length === 0 ? '清單空空如也，快去搜尋想去的地點吧！' : '找不到符合的地點'}</p>
                 </div>
               ) : (
-                Object.entries(groupedByCity).map(([city, places]) => (
-                  <div key={city} className="space-y-3">
-                    <h2 className="text-lg font-bold text-gray-800 border-l-4 border-blue-500 pl-3 flex items-center">
-                      {city}
-                      <span className="ml-2 text-xs font-normal text-gray-400 bg-gray-200 px-2 py-0.5 rounded-full">{places.length}</span>
-                    </h2>
-                    
-                    <div className="grid gap-3">
-                      {places.map(place => {
-                        const isExpanded = expandedCards.includes(place.id);
-                        
-                        const isCenter = centerId === place.id;
-                        const isNearby = nearbyIds.includes(place.id);
+                Object.entries(groupedByRegion).map(([region, places]) => {
+                  // 預設為展開狀態
+                  const isRegionExpanded = expandedRegions[region] !== false;
 
-                        return (
-                          <div key={place.id} className={`rounded-2xl shadow-sm ring-1 overflow-hidden transition-all duration-300 ${isCenter ? 'ring-blue-500 bg-blue-50' : isNearby ? 'ring-yellow-400 bg-yellow-50' : 'ring-gray-200 bg-white'}`}>
-                            
-                            <div 
-                              className={`p-4 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-gray-50 ${selectedExportIds.includes(place.id) ? 'bg-blue-50/50' : ''}`} 
-                              onClick={() => {
-                                // 👉 判斷：如果在匯出模式，點擊卡片就是選取；否則就是原本的展開
-                                if (isExportMode) {
-                                  setSelectedExportIds(prev => prev.includes(place.id) ? prev.filter(id => id !== place.id) : [...prev, place.id]);
-                                } else {
-                                  toggleCard(place.id);
-                                }
-                              }}
-                            >
-                              <div className="flex items-center gap-3 flex-1 overflow-hidden">
-                                {/* 👉 只有在匯出模式才顯示這個打勾框 */}
-                                {isExportMode && (
-                                  <div className={`shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors ${selectedExportIds.includes(place.id) ? 'bg-blue-500 border-blue-500' : 'border-gray-300'}`}>
-                                    {selectedExportIds.includes(place.id) && <span className="text-white text-xs">✓</span>}
+                  return (
+                    <div key={region} className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+                      {/* 分類標題列 (點擊折疊/展開) */}
+                      <div 
+                        className="bg-gray-50 p-4 flex justify-between items-center cursor-pointer hover:bg-gray-100 transition"
+                        onClick={() => toggleRegion(region)}
+                      >
+                        <h2 className="text-lg font-bold text-gray-800 flex items-center">
+                          {region}
+                          <span className="ml-2 text-xs font-normal text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full">{places.length}</span>
+                        </h2>
+                        <span className="text-gray-400 font-bold text-xl">
+                          {isRegionExpanded ? '▲' : '▼'}
+                        </span>
+                      </div>
+
+                      {/* 展開的地點內容 */}
+                      {isRegionExpanded && (
+                        <div className="p-3 grid gap-3 border-t border-gray-100 bg-white">
+                          {places.map(place => {
+                            const isExpanded = expandedCards.includes(place.id);
+                            const isCenter = centerId === place.id;
+                            const isNearby = nearbyIds.includes(place.id);
+
+                            return (
+                              <div key={place.id} className={`rounded-2xl shadow-sm ring-1 overflow-hidden transition-all duration-300 ${isCenter ? 'ring-blue-500 bg-blue-50' : isNearby ? 'ring-yellow-400 bg-yellow-50' : 'ring-gray-200 bg-white'}`}>
+                                
+                                <div 
+                                  className={`p-4 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-gray-50 ${selectedExportIds.includes(place.id) ? 'bg-blue-50/50' : ''}`} 
+                                  onClick={() => {
+                                    if (isExportMode) {
+                                      setSelectedExportIds(prev => prev.includes(place.id) ? prev.filter(id => id !== place.id) : [...prev, place.id]);
+                                    } else {
+                                      toggleCard(place.id);
+                                    }
+                                  }}
+                                >
+                                  <div className="flex items-center gap-3 flex-1 overflow-hidden">
+                                    {isExportMode && (
+                                      <div className={`shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors ${selectedExportIds.includes(place.id) ? 'bg-blue-500 border-blue-500' : 'border-gray-300'}`}>
+                                        {selectedExportIds.includes(place.id) && <span className="text-white text-xs">✓</span>}
+                                      </div>
+                                    )}
+
+                                    <h3 className="font-bold text-base text-gray-900 leading-snug flex-1 truncate">
+                                      {isCenter && <span className="mr-1">📍</span>}
+                                      {isNearby && <span className="mr-1">⭐</span>}
+                                      {place.customName || place.displayName?.text || '未知名稱'}
+                                    </h3>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span className={`text-gray-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}>▼</span>
+                                    
+                                    <button 
+                                      onClick={(e) => { 
+                                        e.stopPropagation(); 
+                                        findNearbySavedPlaces(place); 
+                                      }}
+                                      className={`px-3 py-1 rounded text-white ${isCenter ? 'bg-gray-400' : 'bg-green-500'}`}
+                                    >
+                                      {isCenter ? '❌ 取消尋找' : '📍 找附近'}
+                                    </button>                                                
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); openEditModal(place); }}
+                                      className="p-1.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-blue-500 hover:text-white transition-colors"
+                                    >
+                                      ✏️
+                                    </button>                                
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); handleDelete(place.id, place.displayName?.text || '此地點'); }}
+                                      className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
+                                    >
+                                      🗑️
+                                    </button>
+                                  </div>
+                                </div>
+                                
+                                {/* 標籤顯示 */}
+                                {place.customTags && place.customTags.length > 0 && (
+                                  <div className="px-4 pb-2 -mt-2 flex gap-1 flex-wrap">
+                                    {place.customTags.map((tag, idx) => (
+                                      <span key={idx} className="text-[10px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
+                                        #{tag}
+                                      </span>
+                                    ))}
                                   </div>
                                 )}
 
-                                <h3 className="font-bold text-base text-gray-900 leading-snug flex-1 truncate">
-                                  {isCenter && <span className="mr-1">📍</span>}
-                                  {isNearby && <span className="mr-1">⭐</span>}
-                                  {place.customName || place.displayName.text}
-                                </h3>
-                              </div>
-
-                              {/* ... 下面的展開箭頭、找附近、編輯、刪除按鈕維持不變 ... */}
-
-                              {/* 👇 在 h3 下方加上這個標籤顯示區塊 */}
-                              {place.customTags && place.customTags.length > 0 && (
-                                <div className="flex gap-1 mt-1 flex-wrap">
-                                  {place.customTags.map((tag, idx) => (
-                                    <span key={idx} className="text-[10px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
-                                      #{tag}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                              
-                              <div className="flex items-center gap-2 shrink-0">
-                                <span className={`text-gray-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}>▼</span>
-                                
-                                <button 
-                                  onClick={(e) => { 
-                                    e.stopPropagation(); 
-                                    findNearbySavedPlaces(place); 
-                                  }}
-                                  className={`px-3 py-1 rounded text-white ${isCenter ? 'bg-gray-400' : 'bg-green-500'}`}
-                                >
-                                  {isCenter ? '❌ 取消尋找' : '📍 找附近'}
-                                </button>                                                                
-                                {/* 把這顆按鈕貼在垃圾桶按鈕的上面 */}
-                                <button 
-                                  onClick={(e) => { e.stopPropagation(); openEditModal(place); }}
-                                  className="p-1.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-blue-500 hover:text-white transition-colors"
-                                >
-                                  ✏️
-                                </button>                                
-                                <button 
-                                  onClick={(e) => { e.stopPropagation(); handleDelete(place.id, place.displayName.text); }}
-                                  className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
-                                >
-                                  🗑️
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* 展開的內容 */}
-                            {isExpanded && (
-                              <div className="px-4 pb-4 pt-1 border-t border-gray-100 bg-gray-50/50">
-                                <div className="text-xs text-gray-500 flex items-center gap-2 mb-3">
-                                  {place.rating && <span className="text-amber-500 font-medium bg-amber-50 px-2 py-1 rounded">⭐ {place.rating} ({place.userRatingCount})</span>}
-                                </div>
-                                <div className="text-xs text-gray-500 bg-white p-3 rounded-xl border border-gray-100 shadow-sm">
-                                  <div className="flex items-start">
-                                    <span className="mr-1.5">📍</span>
-                                    <span>{place.formattedAddress}</span>
+                                {/* 展開的詳細內容 */}
+                                {isExpanded && (
+                                  <div className="px-4 pb-4 pt-1 border-t border-gray-100 bg-gray-50/50">
+                                    <div className="text-xs text-gray-500 flex items-center gap-2 mb-3">
+                                      {place.rating && <span className="text-amber-500 font-medium bg-amber-50 px-2 py-1 rounded">⭐ {place.rating} ({place.userRatingCount || 0})</span>}
+                                    </div>
+                                    <div className="text-xs text-gray-500 bg-white p-3 rounded-xl border border-gray-100 shadow-sm">
+                                      <div className="flex items-start">
+                                        <span className="mr-1.5">📍</span>
+                                        <span>{place.formattedAddress || '無詳細地址'}</span>
+                                      </div>
+                                      {renderOpeningHours(place.regularOpeningHours)}
+                                    </div>
+                                    
+                                    <div className="mt-3 flex gap-2">
+                                      <button
+                                        onClick={() => openInGoogleMaps(place)}
+                                        className="flex-1 py-2.5 bg-blue-100 text-blue-700 font-bold text-sm rounded-xl hover:bg-blue-200 transition-colors flex justify-center items-center gap-2"
+                                      >
+                                        <span>🗺️</span> 地圖開啟
+                                      </button>
+                                      <button
+                                        onClick={() => handleFindBranches(place)}
+                                        className="flex-1 py-2.5 bg-purple-100 text-purple-700 font-bold text-sm rounded-xl hover:bg-purple-200 transition-colors flex justify-center items-center gap-2"
+                                      >
+                                        <span>🏪</span> 找附近分店
+                                      </button>
+                                    </div>
                                   </div>
-                                  {renderOpeningHours(place.regularOpeningHours)}
-                                </div>
-                                
-                                {/* 這裡將「地圖」跟「找分店」按鈕放在一起 */}
-                                <div className="mt-3 flex gap-2">
-                                  <button
-                                    onClick={() => openInGoogleMaps(place)}
-                                    className="flex-1 py-2.5 bg-blue-100 text-blue-700 font-bold text-sm rounded-xl hover:bg-blue-200 transition-colors flex justify-center items-center gap-2"
-                                  >
-                                    <span>🗺️</span> 地圖開啟
-                                  </button>
-                                  
-                                  {/* 請確保你在 App 函數裡有定義 handleFindBranches */}
-                                  {/* 如果還沒定義，可以先把它註解掉以免報錯 */}
-                                  <button
-                                    onClick={() => handleFindBranches(place)}
-                                    className="flex-1 py-2.5 bg-purple-100 text-purple-700 font-bold text-sm rounded-xl hover:bg-purple-200 transition-colors flex justify-center items-center gap-2"
-                                  >
-                                    <span>🏪</span> 找附近分店
-                                  </button>
-                                </div>
-                                
+                                )}
                               </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
