@@ -36,6 +36,7 @@ interface GooglePlace {
   };
   customName?: string;
   customCity?: string;
+  customArea?: string; // 👇 新增：自訂區域 (如: 梅田、難波)
   customTags?: string[];
 }
 
@@ -54,29 +55,32 @@ export default function App() {
   const [isExportMode, setIsExportMode] = useState(false);
   const [selectedExportIds, setSelectedExportIds] = useState<string[]>([]);
   
-  // 紀錄「國家分類」的折疊狀態
+  // 📝 紀錄三層分類的折疊狀態 (預設皆為 {}，代表全關閉)
   const [expandedRegions, setExpandedRegions] = useState<Record<string, boolean>>({});
-  // 👇 新增：紀錄「城市分類」的折疊狀態
   const [expandedCities, setExpandedCities] = useState<Record<string, boolean>>({});
+  const [expandedAreas, setExpandedAreas] = useState<Record<string, boolean>>({}); // 👇 第三層：區域
 
   const toggleRegion = (region: string) => {
-    setExpandedRegions(prev => ({ ...prev, [region]: prev[region] === false ? true : false }));
+    setExpandedRegions(prev => ({ ...prev, [region]: !prev[region] }));
   };
-
-  // 👇 新增：切換城市折疊狀態的函數
   const toggleCity = (cityKey: string) => {
-    setExpandedCities(prev => ({ ...prev, [cityKey]: prev[cityKey] === false ? true : false }));
+    setExpandedCities(prev => ({ ...prev, [cityKey]: !prev[cityKey] }));
+  };
+  const toggleArea = (areaKey: string) => {
+    setExpandedAreas(prev => ({ ...prev, [areaKey]: !prev[areaKey] }));
   };
 
   // --- 📝 編輯功能狀態 ---
   const [editingPlace, setEditingPlace] = useState<GooglePlace | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', city: '', tags: '' });
+  const [editForm, setEditForm] = useState({ name: '', city: '', area: '', tags: '' });
 
   const openEditModal = (place: GooglePlace) => {
     setEditingPlace(place);
+    const autoLocation = getCountryCityArea(place.addressComponents || []);
     setEditForm({
       name: place.customName || place.displayName?.text || '未知名稱',
-      city: place.customCity || getCountryAndCity(place.addressComponents || []).city,
+      city: place.customCity || autoLocation.city,
+      area: place.customArea || autoLocation.area, // 帶入區域
       tags: place.customTags ? place.customTags.join(', ') : ''
     });
   };
@@ -89,6 +93,7 @@ export default function App() {
           ...p,
           customName: editForm.name,
           customCity: editForm.city,
+          customArea: editForm.area, // 儲存自訂區域
           customTags: editForm.tags.split(',').map(t => t.trim()).filter(t => t !== '')
         };
       }
@@ -185,14 +190,24 @@ export default function App() {
     }
   }, []);
 
-  const getCountryAndCity = (components: GooglePlace['addressComponents'] = []) => {
+  // 👇 升級：自動抓取「國家、城市、區域(區/町)」三層資訊
+  const getCountryCityArea = (components: GooglePlace['addressComponents'] = []) => {
     const safeComponents = Array.isArray(components) ? components : [];
     
     const country = safeComponents.find(c => c.types?.includes('country'))?.longText || '';
+    
     let city = safeComponents.find(c => 
       c.types?.includes('administrative_area_level_1') || 
-      c.types?.includes('locality') ||
-      c.types?.includes('sublocality_level_1')
+      c.types?.includes('locality')
+    )?.longText || '';
+
+    // 抓取更細的區/鎮/鄉/商圈
+    let area = safeComponents.find(c => 
+      c.types?.includes('sublocality_level_1') || 
+      c.types?.includes('sublocality_level_2') || 
+      c.types?.includes('neighborhood') ||
+      c.types?.includes('administrative_area_level_2') ||
+      c.types?.includes('administrative_area_level_3')
     )?.longText || '';
     
     const normalizedCountry = country.includes('台灣') || country === 'Taiwan' ? '🇹🇼 台灣' :
@@ -201,12 +216,15 @@ export default function App() {
                               country || '🌍 其他地區';
 
     Object.keys(cityTranslationMap).forEach(engKey => {
-      if (city.includes(engKey)) {
-        city = city.replace(engKey, cityTranslationMap[engKey]).trim();
-      }
+      if (city.includes(engKey)) city = city.replace(engKey, cityTranslationMap[engKey]).trim();
+      if (area.includes(engKey)) area = area.replace(engKey, cityTranslationMap[engKey]).trim();
     });
 
-    return { country: normalizedCountry, city: city || '未分類地區' };
+    return { 
+      country: normalizedCountry, 
+      city: city || '未分類城市', 
+      area: area || '未分類區域' 
+    };
   };
 
   const handleSearch = async (e?: React.FormEvent) => {
@@ -306,7 +324,7 @@ export default function App() {
     );
   };
 
-  // --- 🌟 雙層清單分組邏輯 (國家 -> 城市) ---
+  // --- 🌟 三層清單分組邏輯 (國家 -> 城市 -> 區域) ---
   const filteredBySearch = savedPlaces.filter(place => {
     if (!listSearchQuery) return true;
     const term = listSearchQuery.toLowerCase();
@@ -316,19 +334,22 @@ export default function App() {
 
   const displayPlaces = selectedCountryTab === '全部' 
     ? filteredBySearch 
-    : filteredBySearch.filter(p => getCountryAndCity(p.addressComponents || []).country === selectedCountryTab);
+    : filteredBySearch.filter(p => getCountryCityArea(p.addressComponents || []).country === selectedCountryTab);
 
-  const groupedByCountryAndCity = displayPlaces.reduce((acc, place) => {
-    const { country, city } = getCountryAndCity(place.addressComponents || []);
+  // 👇 將資料結構轉換成： { "🇹🇼 台灣": { "台北市": { "信義區": [地點1], "大安區": [地點2] } }, "🇯🇵 日本": { "大阪": { "梅田": [地點3] } } }
+  const groupedByLocation = displayPlaces.reduce((acc, place) => {
+    const { country, city, area } = getCountryCityArea(place.addressComponents || []);
     const countryKey = country || '🌍 其他地區'; 
     const cityKey = place.customCity || city || '其他地區';
+    const areaKey = place.customArea || area || '其他區域'; // 優先使用自訂區域
 
     if (!acc[countryKey]) acc[countryKey] = {};
-    if (!acc[countryKey][cityKey]) acc[countryKey][cityKey] = [];
+    if (!acc[countryKey][cityKey]) acc[countryKey][cityKey] = {};
+    if (!acc[countryKey][cityKey][areaKey]) acc[countryKey][cityKey][areaKey] = [];
     
-    acc[countryKey][cityKey].push(place);
+    acc[countryKey][cityKey][areaKey].push(place);
     return acc;
-  }, {} as Record<string, Record<string, GooglePlace[]>>);
+  }, {} as Record<string, Record<string, Record<string, GooglePlace[]>>>);
 
   const handleRichExport = async () => {
       if (selectedExportIds.length === 0) {
@@ -395,8 +416,8 @@ export default function App() {
               <div className="mt-6 rounded-3xl bg-white p-5 shadow-xl ring-1 ring-black/5 animate-in slide-in-from-top-4 fade-in duration-300">
                 <h3 className="text-xl font-bold text-gray-900">{selectedLocation.displayName?.text || '未知名稱'}</h3>
                 <div className="mt-2 flex flex-wrap gap-2 text-sm">
-                  <span className="rounded-md bg-blue-50 text-blue-700 px-2 py-1 font-medium">{getCountryAndCity(selectedLocation.addressComponents || []).country}</span>
-                  <span className="rounded-md bg-gray-100 px-2 py-1 font-medium text-gray-600">{getCountryAndCity(selectedLocation.addressComponents || []).city}</span>
+                  <span className="rounded-md bg-blue-50 text-blue-700 px-2 py-1 font-medium">{getCountryCityArea(selectedLocation.addressComponents || []).country}</span>
+                  <span className="rounded-md bg-gray-100 px-2 py-1 font-medium text-gray-600">{getCountryCityArea(selectedLocation.addressComponents || []).city}</span>
                   {selectedLocation.rating && <span className="text-amber-500 font-bold ml-1">⭐ {selectedLocation.rating}</span>}
                 </div>
                 
@@ -447,17 +468,23 @@ export default function App() {
               </>
             )}
 
-            {/* 🌟 雙層國家與城市分類清單 */}
+            {/* 🌟 三層分類清單 (國家 -> 城市 -> 區域) */}
             <div className="space-y-4 mt-2">
-              {Object.keys(groupedByCountryAndCity).length === 0 ? (
+              {Object.keys(groupedByLocation).length === 0 ? (
                 <div className="text-center py-20 text-gray-400">
                   <div className="text-4xl mb-4">🧳</div>
                   <p>{savedPlaces.length === 0 ? '清單空空如也，快去搜尋想去的地點吧！' : '找不到符合的地點'}</p>
                 </div>
               ) : (
-                Object.entries(groupedByCountryAndCity).map(([country, cityGroups]) => {
-                  const isCountryExpanded = expandedRegions[country] !== false;
-                  const countryTotalPlaces = Object.values(cityGroups).reduce((sum, places) => sum + places.length, 0);
+                Object.entries(groupedByLocation).map(([country, cityGroups]) => {
+                  // 👇 改為預設關閉 (!! 會把 undefined 變成 false)
+                  const isCountryExpanded = !!expandedRegions[country]; 
+                  
+                  // 計算這個國家總共有幾個地點
+                  let countryTotalPlaces = 0;
+                  Object.values(cityGroups).forEach(areaGroups => {
+                    Object.values(areaGroups).forEach(places => { countryTotalPlaces += places.length; });
+                  });
 
                   return (
                     <div key={country} className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
@@ -478,130 +505,157 @@ export default function App() {
 
                       {/* --- 第二層：城市內容區塊 --- */}
                       {isCountryExpanded && (
-                        <div className="p-3 grid gap-2 border-t border-gray-100 bg-white pb-4">
-                          {Object.entries(cityGroups).map(([city, places]) => {
-                            // 👇 給每個城市一個獨一無二的鑰匙 (國家名稱-城市名稱)
+                        <div className="grid border-t border-gray-100 bg-white">
+                          {Object.entries(cityGroups).map(([city, areaGroups]) => {
                             const cityKey = `${country}-${city}`;
-                            // 預設為展開狀態
-                            const isCityExpanded = expandedCities[cityKey] !== false;
+                            const isCityExpanded = !!expandedCities[cityKey]; // 預設關閉
+                            
+                            const cityTotalPlaces = Object.values(areaGroups).reduce((sum, places) => sum + places.length, 0);
 
                             return (
-                              <div key={cityKey} className="space-y-2 mb-2">
-                                
-                                {/* 👇 城市標題 (加入點擊事件，變成可折疊的按鈕) */}
+                              <div key={cityKey} className="border-b border-gray-50 last:border-0">
+                                {/* 城市標題 (點擊展開區域) */}
                                 <div 
-                                  className="flex justify-between items-center cursor-pointer hover:bg-gray-50 py-1.5 -ml-1 pl-1 pr-2 rounded transition-colors"
+                                  className="flex justify-between items-center cursor-pointer hover:bg-gray-50 p-3 transition-colors"
                                   onClick={() => toggleCity(cityKey)}
                                 >
-                                  <h3 className="font-bold text-gray-700 text-sm border-l-4 border-blue-500 pl-2 flex items-center">
-                                    {city} <span className="ml-2 text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{places.length}</span>
+                                  <h3 className="font-bold text-gray-700 text-base flex items-center">
+                                    <span className="text-gray-400 mr-2 text-xs">📍</span>
+                                    {city} 
+                                    <span className="ml-2 text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{cityTotalPlaces}</span>
                                   </h3>
-                                  <span className="text-gray-400 text-xs font-bold">
+                                  <span className="text-gray-400 text-sm font-bold">
                                     {isCityExpanded ? '▲' : '▼'}
                                   </span>
                                 </div>
                                 
-                                {/* 該城市下的地點卡片清單 (透過 isCityExpanded 控制顯示) */}
+                                {/* --- 第三層：區域內容區塊 --- */}
                                 {isCityExpanded && (
-                                  <div className="grid gap-3 pl-1">
-                                    {places.map(place => {
-                                      const isExpanded = expandedCards.includes(place.id);
-                                      const isCenter = centerId === place.id;
-                                      const isNearby = nearbyIds.includes(place.id);
+                                  <div className="bg-gray-50/50 pb-2">
+                                    {Object.entries(areaGroups).map(([area, places]) => {
+                                      const areaKey = `${cityKey}-${area}`;
+                                      const isAreaExpanded = !!expandedAreas[areaKey]; // 預設關閉
 
                                       return (
-                                        <div key={place.id} className={`rounded-xl shadow-sm ring-1 overflow-hidden transition-all duration-300 ${isCenter ? 'ring-blue-500 bg-blue-50' : isNearby ? 'ring-yellow-400 bg-yellow-50' : 'ring-gray-200 bg-white'}`}>
-                                          
+                                        <div key={areaKey} className="px-3 pt-2 pb-1">
+                                          {/* 區域標題 */}
                                           <div 
-                                            className={`p-3.5 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-gray-50 ${selectedExportIds.includes(place.id) ? 'bg-blue-50/50' : ''}`} 
-                                            onClick={() => {
-                                              if (isExportMode) {
-                                                setSelectedExportIds(prev => prev.includes(place.id) ? prev.filter(id => id !== place.id) : [...prev, place.id]);
-                                              } else {
-                                                toggleCard(place.id);
-                                              }
-                                            }}
+                                            className="flex justify-between items-center cursor-pointer hover:bg-gray-100 p-2 rounded-lg transition-colors border-l-4 border-blue-400 bg-white shadow-sm mb-2"
+                                            onClick={() => toggleArea(areaKey)}
                                           >
-                                            <div className="flex items-center gap-3 flex-1 overflow-hidden">
-                                              {isExportMode && (
-                                                <div className={`shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors ${selectedExportIds.includes(place.id) ? 'bg-blue-500 border-blue-500' : 'border-gray-300'}`}>
-                                                  {selectedExportIds.includes(place.id) && <span className="text-white text-xs">✓</span>}
-                                                </div>
-                                              )}
-
-                                              <h3 className="font-bold text-base text-gray-900 leading-snug flex-1 truncate">
-                                                {isCenter && <span className="mr-1">📍</span>}
-                                                {isNearby && <span className="mr-1">⭐</span>}
-                                                {place.customName || place.displayName?.text || '未知名稱'}
-                                              </h3>
-                                            </div>
-
-                                            <div className="flex items-center gap-2 shrink-0">
-                                              <span className={`text-gray-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}>▼</span>
-                                              
-                                              <button 
-                                                onClick={(e) => { 
-                                                  e.stopPropagation(); 
-                                                  findNearbySavedPlaces(place); 
-                                                }}
-                                                className={`px-3 py-1 rounded text-white text-sm ${isCenter ? 'bg-gray-400' : 'bg-green-500'}`}
-                                              >
-                                                {isCenter ? '❌ 取消尋找' : '📍 找附近'}
-                                              </button>                                                
-                                              <button 
-                                                onClick={(e) => { e.stopPropagation(); openEditModal(place); }}
-                                                className="p-1.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-blue-500 hover:text-white transition-colors"
-                                              >
-                                                ✏️
-                                              </button>                                
-                                              <button 
-                                                onClick={(e) => { e.stopPropagation(); handleDelete(place.id, place.displayName?.text || '此地點'); }}
-                                                className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
-                                              >
-                                                🗑️
-                                              </button>
-                                            </div>
+                                            <h4 className="font-bold text-gray-600 text-sm flex items-center">
+                                              {area} 
+                                              <span className="ml-2 text-[10px] text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded">{places.length}</span>
+                                            </h4>
+                                            <span className="text-gray-400 text-xs font-bold">
+                                              {isAreaExpanded ? '▲' : '▼'}
+                                            </span>
                                           </div>
-                                          
-                                          {/* 標籤顯示 */}
-                                          {place.customTags && place.customTags.length > 0 && (
-                                            <div className="px-4 pb-2 -mt-1.5 flex gap-1 flex-wrap">
-                                              {place.customTags.map((tag, idx) => (
-                                                <span key={idx} className="text-[10px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
-                                                  #{tag}
-                                                </span>
-                                              ))}
-                                            </div>
-                                          )}
 
-                                          {/* 展開的詳細內容 */}
-                                          {isExpanded && (
-                                            <div className="px-4 pb-4 pt-1 border-t border-gray-100 bg-gray-50/50">
-                                              <div className="text-xs text-gray-500 flex items-center gap-2 mb-3">
-                                                {place.rating && <span className="text-amber-500 font-medium bg-amber-50 px-2 py-1 rounded">⭐ {place.rating} ({place.userRatingCount || 0})</span>}
-                                              </div>
-                                              <div className="text-xs text-gray-500 bg-white p-3 rounded-xl border border-gray-100 shadow-sm">
-                                                <div className="flex items-start">
-                                                  <span className="mr-1.5">📍</span>
-                                                  <span>{place.formattedAddress || '無詳細地址'}</span>
-                                                </div>
-                                                {renderOpeningHours(place.regularOpeningHours)}
-                                              </div>
-                                              
-                                              <div className="mt-3 flex gap-2">
-                                                <button
-                                                  onClick={() => openInGoogleMaps(place)}
-                                                  className="flex-1 py-2 bg-blue-100 text-blue-700 font-bold text-sm rounded-xl hover:bg-blue-200 transition-colors flex justify-center items-center gap-2"
-                                                >
-                                                  <span>🗺️</span> 地圖開啟
-                                                </button>
-                                                <button
-                                                  onClick={() => handleFindBranches(place)}
-                                                  className="flex-1 py-2 bg-purple-100 text-purple-700 font-bold text-sm rounded-xl hover:bg-purple-200 transition-colors flex justify-center items-center gap-2"
-                                                >
-                                                  <span>🏪</span> 找附近分店
-                                                </button>
-                                              </div>
+                                          {/* --- 第四層：地點卡片清單 --- */}
+                                          {isAreaExpanded && (
+                                            <div className="grid gap-3 pl-2 pr-1 mb-3">
+                                              {places.map(place => {
+                                                const isExpanded = expandedCards.includes(place.id);
+                                                const isCenter = centerId === place.id;
+                                                const isNearby = nearbyIds.includes(place.id);
+
+                                                return (
+                                                  <div key={place.id} className={`rounded-xl shadow-sm ring-1 overflow-hidden transition-all duration-300 ${isCenter ? 'ring-blue-500 bg-blue-50' : isNearby ? 'ring-yellow-400 bg-yellow-50' : 'ring-gray-200 bg-white'}`}>
+                                                    
+                                                    <div 
+                                                      className={`p-3 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-gray-50 ${selectedExportIds.includes(place.id) ? 'bg-blue-50/50' : ''}`} 
+                                                      onClick={() => {
+                                                        if (isExportMode) {
+                                                          setSelectedExportIds(prev => prev.includes(place.id) ? prev.filter(id => id !== place.id) : [...prev, place.id]);
+                                                        } else {
+                                                          toggleCard(place.id);
+                                                        }
+                                                      }}
+                                                    >
+                                                      <div className="flex items-center gap-3 flex-1 overflow-hidden">
+                                                        {isExportMode && (
+                                                          <div className={`shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors ${selectedExportIds.includes(place.id) ? 'bg-blue-500 border-blue-500' : 'border-gray-300'}`}>
+                                                            {selectedExportIds.includes(place.id) && <span className="text-white text-xs">✓</span>}
+                                                          </div>
+                                                        )}
+
+                                                        <h3 className="font-bold text-[15px] text-gray-900 leading-snug flex-1 truncate">
+                                                          {isCenter && <span className="mr-1">📍</span>}
+                                                          {isNearby && <span className="mr-1">⭐</span>}
+                                                          {place.customName || place.displayName?.text || '未知名稱'}
+                                                        </h3>
+                                                      </div>
+
+                                                      <div className="flex items-center gap-2 shrink-0">
+                                                        <span className={`text-gray-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}>▼</span>
+                                                        
+                                                        <button 
+                                                          onClick={(e) => { 
+                                                            e.stopPropagation(); 
+                                                            findNearbySavedPlaces(place); 
+                                                          }}
+                                                          className={`px-2.5 py-1.5 rounded text-white text-xs font-bold ${isCenter ? 'bg-gray-400' : 'bg-green-500'}`}
+                                                        >
+                                                          {isCenter ? '❌ 取消' : '📍 附近'}
+                                                        </button>                                                
+                                                        <button 
+                                                          onClick={(e) => { e.stopPropagation(); openEditModal(place); }}
+                                                          className="p-1.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-blue-500 hover:text-white transition-colors"
+                                                        >
+                                                          ✏️
+                                                        </button>                                
+                                                        <button 
+                                                          onClick={(e) => { e.stopPropagation(); handleDelete(place.id, place.displayName?.text || '此地點'); }}
+                                                          className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
+                                                        >
+                                                          🗑️
+                                                        </button>
+                                                      </div>
+                                                    </div>
+                                                    
+                                                    {place.customTags && place.customTags.length > 0 && (
+                                                      <div className="px-3 pb-2 -mt-1 flex gap-1 flex-wrap">
+                                                        {place.customTags.map((tag, idx) => (
+                                                          <span key={idx} className="text-[10px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
+                                                            #{tag}
+                                                          </span>
+                                                        ))}
+                                                      </div>
+                                                    )}
+
+                                                    {isExpanded && (
+                                                      <div className="px-4 pb-4 pt-1 border-t border-gray-100 bg-gray-50/50">
+                                                        <div className="text-xs text-gray-500 flex items-center gap-2 mb-3">
+                                                          {place.rating && <span className="text-amber-500 font-medium bg-amber-50 px-2 py-1 rounded">⭐ {place.rating} ({place.userRatingCount || 0})</span>}
+                                                        </div>
+                                                        <div className="text-xs text-gray-500 bg-white p-3 rounded-xl border border-gray-100 shadow-sm">
+                                                          <div className="flex items-start">
+                                                            <span className="mr-1.5">📍</span>
+                                                            <span>{place.formattedAddress || '無詳細地址'}</span>
+                                                          </div>
+                                                          {renderOpeningHours(place.regularOpeningHours)}
+                                                        </div>
+                                                        
+                                                        <div className="mt-3 flex gap-2">
+                                                          <button
+                                                            onClick={() => openInGoogleMaps(place)}
+                                                            className="flex-1 py-2 bg-blue-100 text-blue-700 font-bold text-sm rounded-xl hover:bg-blue-200 transition-colors flex justify-center items-center gap-2"
+                                                          >
+                                                            <span>🗺️</span> 開啟
+                                                          </button>
+                                                          <button
+                                                            onClick={() => handleFindBranches(place)}
+                                                            className="flex-1 py-2 bg-purple-100 text-purple-700 font-bold text-sm rounded-xl hover:bg-purple-200 transition-colors flex justify-center items-center gap-2"
+                                                          >
+                                                            <span>🏪</span> 分店
+                                                          </button>
+                                                        </div>
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                );
+                                              })}
                                             </div>
                                           )}
                                         </div>
@@ -647,9 +701,15 @@ export default function App() {
                 <label className="block text-sm text-gray-600 mb-1 font-bold">店名 / 景點名稱</label>
                 <input type="text" value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
               </div>
-              <div>
-                <label className="block text-sm text-gray-600 mb-1 font-bold">所屬地區 (可手動分類城市)</label>
-                <input type="text" value={editForm.city} onChange={e => setEditForm({...editForm, city: e.target.value})} className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="例如：台北市, 大阪" />
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="block text-sm text-gray-600 mb-1 font-bold">城市</label>
+                  <input type="text" value={editForm.city} onChange={e => setEditForm({...editForm, city: e.target.value})} className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="例如：大阪" />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-sm text-gray-600 mb-1 font-bold">區域 (商圈)</label>
+                  <input type="text" value={editForm.area} onChange={e => setEditForm({...editForm, area: e.target.value})} className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="例如：梅田, 難波" />
+                </div>
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1 font-bold">自訂標籤 (用逗號分隔)</label>
