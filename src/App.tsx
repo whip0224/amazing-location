@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { cityTranslationMap } from './cityTranslations';
+import { useCityTranslations } from './hooks/useCityTranslations'; 
 
 // 計算兩點經緯度直線距離的公式 (回傳單位：公里)
 const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
@@ -36,11 +36,14 @@ interface GooglePlace {
   };
   customName?: string;
   customCity?: string;
-  customArea?: string; // 👇 新增：自訂區域 (如: 梅田、難波)
+  customArea?: string; 
   customTags?: string[];
 }
 
 export default function App() {
+  // 🌟 1. 呼叫翻譯 Hook，取得從 Google Sheet 來的翻譯資料
+  const { translations, isLoading: isTranslationsLoading } = useCityTranslations();
+
   const [activeTab, setActiveTab] = useState<'search' | 'list'>('search');
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState<GooglePlace[]>([]);
@@ -55,20 +58,14 @@ export default function App() {
   const [isExportMode, setIsExportMode] = useState(false);
   const [selectedExportIds, setSelectedExportIds] = useState<string[]>([]);
   
-  // 📝 紀錄三層分類的折疊狀態 (預設皆為 {}，代表全關閉)
+  // 📝 紀錄三層分類的折疊狀態
   const [expandedRegions, setExpandedRegions] = useState<Record<string, boolean>>({});
   const [expandedCities, setExpandedCities] = useState<Record<string, boolean>>({});
-  const [expandedAreas, setExpandedAreas] = useState<Record<string, boolean>>({}); // 👇 第三層：區域
+  const [expandedAreas, setExpandedAreas] = useState<Record<string, boolean>>({});
 
-  const toggleRegion = (region: string) => {
-    setExpandedRegions(prev => ({ ...prev, [region]: !prev[region] }));
-  };
-  const toggleCity = (cityKey: string) => {
-    setExpandedCities(prev => ({ ...prev, [cityKey]: !prev[cityKey] }));
-  };
-  const toggleArea = (areaKey: string) => {
-    setExpandedAreas(prev => ({ ...prev, [areaKey]: !prev[areaKey] }));
-  };
+  const toggleRegion = (region: string) => setExpandedRegions(prev => ({ ...prev, [region]: !prev[region] }));
+  const toggleCity = (cityKey: string) => setExpandedCities(prev => ({ ...prev, [cityKey]: !prev[cityKey] }));
+  const toggleArea = (areaKey: string) => setExpandedAreas(prev => ({ ...prev, [areaKey]: !prev[areaKey] }));
 
   // --- 📝 編輯功能狀態 ---
   const [editingPlace, setEditingPlace] = useState<GooglePlace | null>(null);
@@ -80,7 +77,7 @@ export default function App() {
     setEditForm({
       name: place.customName || place.displayName?.text || '未知名稱',
       city: place.customCity || autoLocation.city,
-      area: place.customArea || autoLocation.area, // 帶入區域
+      area: place.customArea || autoLocation.area,
       tags: place.customTags ? place.customTags.join(', ') : ''
     });
   };
@@ -93,7 +90,7 @@ export default function App() {
           ...p,
           customName: editForm.name,
           customCity: editForm.city,
-          customArea: editForm.area, // 儲存自訂區域
+          customArea: editForm.area,
           customTags: editForm.tags.split(',').map(t => t.trim()).filter(t => t !== '')
         };
       }
@@ -190,7 +187,7 @@ export default function App() {
     }
   }, []);
 
-  // 👇 升級：自動抓取「國家、城市、區域(區/町)」三層資訊
+  // 🌟 2. 升級版：自動抓取並搭配 Google Sheet 的資料進行翻譯比對
   const getCountryCityArea = (components: GooglePlace['addressComponents'] = []) => {
     const safeComponents = Array.isArray(components) ? components : [];
     
@@ -201,7 +198,6 @@ export default function App() {
       c.types?.includes('locality')
     )?.longText || '';
 
-    // 抓取更細的區/鎮/鄉/商圈
     let area = safeComponents.find(c => 
       c.types?.includes('sublocality_level_1') || 
       c.types?.includes('sublocality_level_2') || 
@@ -215,9 +211,20 @@ export default function App() {
                               country.includes('韓國') || country === 'South Korea' ? '🇰🇷 韓國' :
                               country || '🌍 其他地區';
 
-    Object.keys(cityTranslationMap).forEach(engKey => {
-      if (city.includes(engKey)) city = city.replace(engKey, cityTranslationMap[engKey]).trim();
-      if (area.includes(engKey)) area = area.replace(engKey, cityTranslationMap[engKey]).trim();
+    // 👇 替換為使用 Google Sheet 抓回來的 translations 狀態進行字串取代
+    Object.keys(translations).forEach(key => {
+      const zhTwName = translations[key]?.['zh-TW'];
+      const enName = translations[key]?.['en'] || key; // 以 en 欄位為主，如果沒有則用 key 代替
+
+      if (zhTwName) {
+        // 如果城市或區域名稱包含英文/Key，就替換為繁體中文
+        if (city.includes(enName)) city = city.replace(enName, zhTwName).trim();
+        if (area.includes(enName)) area = area.replace(enName, zhTwName).trim();
+        
+        // 防呆：直接比對 key (例如有時回傳 tokyo)
+        if (city.toLowerCase().includes(key.toLowerCase())) city = city.replace(new RegExp(key, 'i'), zhTwName).trim();
+        if (area.toLowerCase().includes(key.toLowerCase())) area = area.replace(new RegExp(key, 'i'), zhTwName).trim();
+      }
     });
 
     return { 
@@ -324,7 +331,6 @@ export default function App() {
     );
   };
 
-  // --- 🌟 三層清單分組邏輯 (國家 -> 城市 -> 區域) ---
   const filteredBySearch = savedPlaces.filter(place => {
     if (!listSearchQuery) return true;
     const term = listSearchQuery.toLowerCase();
@@ -336,12 +342,11 @@ export default function App() {
     ? filteredBySearch 
     : filteredBySearch.filter(p => getCountryCityArea(p.addressComponents || []).country === selectedCountryTab);
 
-  // 👇 將資料結構轉換成： { "🇹🇼 台灣": { "台北市": { "信義區": [地點1], "大安區": [地點2] } }, "🇯🇵 日本": { "大阪": { "梅田": [地點3] } } }
   const groupedByLocation = displayPlaces.reduce((acc, place) => {
     const { country, city, area } = getCountryCityArea(place.addressComponents || []);
     const countryKey = country || '🌍 其他地區'; 
     const cityKey = place.customCity || city || '其他地區';
-    const areaKey = place.customArea || area || '其他區域'; // 優先使用自訂區域
+    const areaKey = place.customArea || area || '其他區域'; 
 
     if (!acc[countryKey]) acc[countryKey] = {};
     if (!acc[countryKey][cityKey]) acc[countryKey][cityKey] = {};
@@ -468,7 +473,6 @@ export default function App() {
               </>
             )}
 
-            {/* 🌟 三層分類清單 (國家 -> 城市 -> 區域) */}
             <div className="space-y-4 mt-2">
               {Object.keys(groupedByLocation).length === 0 ? (
                 <div className="text-center py-20 text-gray-400">
@@ -477,10 +481,8 @@ export default function App() {
                 </div>
               ) : (
                 Object.entries(groupedByLocation).map(([country, cityGroups]) => {
-                  // 👇 改為預設關閉 (!! 會把 undefined 變成 false)
                   const isCountryExpanded = !!expandedRegions[country]; 
                   
-                  // 計算這個國家總共有幾個地點
                   let countryTotalPlaces = 0;
                   Object.values(cityGroups).forEach(areaGroups => {
                     Object.values(areaGroups).forEach(places => { countryTotalPlaces += places.length; });
@@ -489,7 +491,6 @@ export default function App() {
                   return (
                     <div key={country} className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
                       
-                      {/* --- 第一層：國家標題列 --- */}
                       <div 
                         className="bg-gray-50 p-4 flex justify-between items-center cursor-pointer hover:bg-gray-100 transition"
                         onClick={() => toggleRegion(country)}
@@ -503,18 +504,16 @@ export default function App() {
                         </span>
                       </div>
 
-                      {/* --- 第二層：城市內容區塊 --- */}
                       {isCountryExpanded && (
                         <div className="grid border-t border-gray-100 bg-white">
                           {Object.entries(cityGroups).map(([city, areaGroups]) => {
                             const cityKey = `${country}-${city}`;
-                            const isCityExpanded = !!expandedCities[cityKey]; // 預設關閉
+                            const isCityExpanded = !!expandedCities[cityKey]; 
                             
                             const cityTotalPlaces = Object.values(areaGroups).reduce((sum, places) => sum + places.length, 0);
 
                             return (
                               <div key={cityKey} className="border-b border-gray-50 last:border-0">
-                                {/* 城市標題 (點擊展開區域) */}
                                 <div 
                                   className="flex justify-between items-center cursor-pointer hover:bg-gray-50 p-3 transition-colors"
                                   onClick={() => toggleCity(cityKey)}
@@ -529,16 +528,14 @@ export default function App() {
                                   </span>
                                 </div>
                                 
-                                {/* --- 第三層：區域內容區塊 --- */}
                                 {isCityExpanded && (
                                   <div className="bg-gray-50/50 pb-2">
                                     {Object.entries(areaGroups).map(([area, places]) => {
                                       const areaKey = `${cityKey}-${area}`;
-                                      const isAreaExpanded = !!expandedAreas[areaKey]; // 預設關閉
+                                      const isAreaExpanded = !!expandedAreas[areaKey]; 
 
                                       return (
                                         <div key={areaKey} className="px-3 pt-2 pb-1">
-                                          {/* 區域標題 */}
                                           <div 
                                             className="flex justify-between items-center cursor-pointer hover:bg-gray-100 p-2 rounded-lg transition-colors border-l-4 border-blue-400 bg-white shadow-sm mb-2"
                                             onClick={() => toggleArea(areaKey)}
@@ -552,7 +549,6 @@ export default function App() {
                                             </span>
                                           </div>
 
-                                          {/* --- 第四層：地點卡片清單 --- */}
                                           {isAreaExpanded && (
                                             <div className="grid gap-3 pl-2 pr-1 mb-3">
                                               {places.map(place => {
