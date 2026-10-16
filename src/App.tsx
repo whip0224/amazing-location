@@ -198,13 +198,14 @@ export default function App() {
       c.types?.includes('locality')
     )?.longText || '';
 
-    let area = safeComponents.find(c => 
-      c.types?.includes('sublocality_level_1') || 
-      c.types?.includes('sublocality_level_2') || 
-      c.types?.includes('neighborhood') ||
-      c.types?.includes('administrative_area_level_2') ||
-      c.types?.includes('administrative_area_level_3')
-    )?.longText || '';
+    // 👇 修改這裡：設定嚴格的優先層級 (優先找「區」，找不到再找「町/商圈」)
+    let area = 
+      safeComponents.find(c => c.types?.includes('sublocality_level_1'))?.longText || 
+      safeComponents.find(c => c.types?.includes('sublocality_level_2'))?.longText || 
+      safeComponents.find(c => c.types?.includes('neighborhood'))?.longText ||
+      safeComponents.find(c => c.types?.includes('administrative_area_level_2'))?.longText ||
+      safeComponents.find(c => c.types?.includes('administrative_area_level_3'))?.longText ||
+      '';
     
     const normalizedCountry = country.includes('台灣') || country === 'Taiwan' ? '🇹🇼 台灣' :
                               country.includes('日本') || country === 'Japan' ? '🇯🇵 日本' : 
