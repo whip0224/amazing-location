@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useCityTranslations } from './hooks/useCityTranslations'; 
+import { getChineseNameByCoords } from './utils/geonamesApi';
 
 // 計算兩點經緯度直線距離的公式 (回傳單位：公里)
 const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
@@ -71,13 +72,33 @@ export default function App() {
   const [editingPlace, setEditingPlace] = useState<GooglePlace | null>(null);
   const [editForm, setEditForm] = useState({ name: '', city: '', area: '', tags: '' });
 
-  const openEditModal = (place: GooglePlace) => {
+  const openEditModal = async (place: GooglePlace) => {
+    // 1. 設定目前正在編輯的地點
     setEditingPlace(place);
+    
+    // 2. 取得原始地址資訊
     const autoLocation = getCountryCityArea(place.addressComponents || []);
+    let rawArea = place.customArea || autoLocation.area; 
+    let finalAreaName = rawArea; // 預設顯示原始英文
+
+    // 3. 【第一層防護：查詢 Google Sheet】
+    const searchKey = rawArea.toLowerCase();
+    if (translations[searchKey] && translations[searchKey]['zh-TW']) {
+      finalAreaName = translations[searchKey]['zh-TW'];
+    } 
+    // 4. 【第二層防護：查詢 GeoNames】
+    else if (place.location?.latitude && place.location?.longitude) {
+      const geoName = await getChineseNameByCoords(place.location.latitude, place.location.longitude);
+      if (geoName) {
+        finalAreaName = geoName;
+      }
+    }
+
+    // 5. 將最終翻譯好的名稱寫入表單狀態
     setEditForm({
       name: place.customName || place.displayName?.text || '未知名稱',
       city: place.customCity || autoLocation.city,
-      area: place.customArea || autoLocation.area,
+      area: finalAreaName, // 👈 這裡套用最終的完美中文名稱
       tags: place.customTags ? place.customTags.join(', ') : ''
     });
   };
