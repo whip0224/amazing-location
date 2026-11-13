@@ -28,13 +28,13 @@ export async function getChineseNameByCoords(lat: number, lng: number): Promise<
       
       if (nearestPlace.alternateNames) {
         // 第一志願：優先找中文 (zh, zh-TW, zh-CN)
-        const zhAlt = nearestPlace.alternateNames.find((alt: any) => alt.lang?.startsWith('zh'));
+        const zhAlt = nearestPlace.alternateNames.find((alt: { lang?: string; name: string }) => alt.lang?.startsWith('zh'));
         if (zhAlt) {
           return zhAlt.name; // 找到就立刻回傳，結束函式
         }
 
         // 第二志願：找日文漢字
-        const jaAlt = nearestPlace.alternateNames.find((alt: any) => 
+        const jaAlt = nearestPlace.alternateNames.find((alt: { lang?: string; name: string }) => 
           alt.lang === 'ja' && /[\u4e00-\u9fa5]/.test(alt.name)
         );
         if (jaAlt) {

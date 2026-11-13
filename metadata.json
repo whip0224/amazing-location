@@ -1,0 +1,5 @@
+{
+  "name": "Amazing Location",
+  "description": "你的專屬旅遊景點收集神器，支援自動中文區域分類、2km 附近搜尋、JSON 備份與 Trip Plan 行程匯出。",
+  "requestFramePermissions": []
+}

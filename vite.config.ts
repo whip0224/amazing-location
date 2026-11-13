@@ -9,7 +9,7 @@ export default defineConfig({
     tailwindcss(), // 👈 啟動裁縫師！
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
+      includeAssets: ['favicon.png', 'apple-touch-icon.png'],
       manifest: {
         name: 'Amazing Location',
         short_name: '旅遊清單',
@@ -38,4 +38,16 @@ export default defineConfig({
       }
     })
   ],
+  server: {
+    proxy: {
+      '/api/places/searchText': {
+        target: 'https://places.googleapis.com',
+        changeOrigin: true,
+        rewrite: () => '/v1/places:searchText',
+        headers: {
+          Referer: 'http://localhost:5173/'
+        }
+      }
+    }
+  }
 })
