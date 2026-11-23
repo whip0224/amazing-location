@@ -52,16 +52,41 @@ interface GooglePlace {
   notes?: string;
 }
 
+interface ExtractedCandidateItem {
+  key: string;
+  extractedName: string;
+  searchQuery: string;
+  hintCity: string;
+  hintArea: string;
+  tags: string[];
+  note: string;
+  matchedPlace: GooglePlace | null;
+  matchStatus: 'matched' | 'not_found' | 'already_saved';
+  selected: boolean;
+}
+
 export default function App() {
-  // 🌟 1. 呼叫翻譯 Hook，取得從 Google Sheet 來的翻譯資料
+  // 🌟 1. 呼叫翻譯 Hook，取得從 Google Sheet 來的翻譯資料 (作為離線／備援機制)
   const { translations } = useCityTranslations();
 
   const [activeTab, setActiveTab] = useState<'search' | 'list'>('search');
+  const [searchMode, setSearchMode] = useState<'keyword' | 'ai_extract'>('keyword');
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState<GooglePlace[]>([]);
   const [selectedLocation, setSelectedLocation] = useState<GooglePlace | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+
+  // ✨ Gemini 智能擷取景點狀態
+  const [extractText, setExtractText] = useState('');
+  const [extractImagePreview, setExtractImagePreview] = useState<string | null>(null);
+  const [extractImageData, setExtractImageData] = useState<{ base64: string; mimeType: string } | null>(null);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
+  const [extractedItems, setExtractedItems] = useState<ExtractedCandidateItem[]>([]);
+  const [isBatchSaving, setIsBatchSaving] = useState(false);
+  const extractImageInputRef = useRef<HTMLInputElement>(null);
+
   const [savedPlaces, setSavedPlaces] = useState<GooglePlace[]>(() => {
     try {
       const localData = localStorage.getItem('amazing_locations');
@@ -80,6 +105,9 @@ export default function App() {
   const [nearbyIds, setNearbyIds] = useState<string[]>([]);
   const [isExportMode, setIsExportMode] = useState(false);
   const [selectedExportIds, setSelectedExportIds] = useState<string[]>([]);
+  const [isDeleteSelectMode, setIsDeleteSelectMode] = useState(false);
+  const [selectedDeleteIds, setSelectedDeleteIds] = useState<string[]>([]);
+  const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [toastNotice, setToastNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -88,7 +116,7 @@ export default function App() {
     setToastNotice(msg);
     window.setTimeout(() => {
       setToastNotice(prev => (prev === msg ? null : prev));
-    }, 3500);
+    }, 4000);
   };
 
   // 📝 紀錄三層分類的折疊狀態
@@ -103,6 +131,7 @@ export default function App() {
   // --- 📝 編輯功能狀態 ---
   const [editingPlace, setEditingPlace] = useState<GooglePlace | null>(null);
   const [editForm, setEditForm] = useState({ name: '', city: '', area: '', tags: '', note: '' });
+  const [isAiClassifyingEdit, setIsAiClassifyingEdit] = useState(false);
 
   // 🌟 2. 升級版：自動抓取並搭配 Google Sheet 的資料進行翻譯比對
   const getCountryCityArea = (components: GooglePlace['addressComponents'] = []) => {
@@ -189,6 +218,50 @@ export default function App() {
     };
   };
 
+  // ✨ 呼叫伺服器端 Gemini API 進行免維護「自動中文城市 + 商圈分類 & 自動打標籤」
+  const classifyPlaceWithGeminiApi = async (
+    place: GooglePlace
+  ): Promise<{ city: string; area: string; tags: string[]; usedGemini: boolean; errorMessage?: string }> => {
+    try {
+      const response = await fetch('/api/gemini/classify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: place.customName || place.displayName?.text || '',
+          address: place.formattedAddress || '',
+          addressComponents: place.addressComponents || [],
+        }),
+      });
+
+      const data = await response.json();
+      if (response.ok && data && typeof data.city === 'string' && typeof data.area === 'string') {
+        return {
+          city: data.city.trim() || '未分類城市',
+          area: data.area.trim() || '未分類區域',
+          tags: Array.isArray(data.tags) ? data.tags.map((t: string) => t.trim()).filter(Boolean) : [],
+          usedGemini: true,
+        };
+      }
+
+      const fallback = await resolveTranslatedCityAndArea(place);
+      return {
+        ...fallback,
+        tags: [],
+        usedGemini: false,
+        errorMessage: data?.error || `HTTP ${response.status}`,
+      };
+    } catch (err) {
+      console.warn('Gemini 分類失敗，自動改用備援分類:', err);
+      const fallback = await resolveTranslatedCityAndArea(place);
+      return {
+        ...fallback,
+        tags: [],
+        usedGemini: false,
+        errorMessage: err instanceof Error ? err.message : '網路連線失敗',
+      };
+    }
+  };
+
   const openEditModal = async (place: GooglePlace) => {
     // 1. 設定目前正在編輯的地點與初始值
     setEditingPlace(place);
@@ -203,14 +276,47 @@ export default function App() {
       note: existingNote,
     });
 
-    // 2. 執行 Google Sheet + GeoNames 翻譯補齊
-    const resolved = await resolveTranslatedCityAndArea(place);
+    // 2. 若尚未有自訂中文城市／區域，執行補齊
+    if (!place.customCity || !place.customArea || place.customArea === '未分類區域') {
+      const resolved = await resolveTranslatedCityAndArea(place);
+      setEditForm(prev => ({
+        ...prev,
+        city: place.customCity || resolved.city,
+        area: place.customArea && place.customArea !== '未分類區域' ? place.customArea : resolved.area,
+      }));
+    }
+  };
 
-    setEditForm(prev => ({
-      ...prev,
-      city: place.customCity || resolved.city,
-      area: resolved.area,
-    }));
+  const handleAiReclassifyInEdit = async () => {
+    if (!editingPlace || isAiClassifyingEdit) return;
+    setIsAiClassifyingEdit(true);
+    try {
+      const result = await classifyPlaceWithGeminiApi({
+        ...editingPlace,
+        customName: editForm.name || editingPlace.displayName?.text,
+      });
+
+      if (!result.usedGemini) {
+        showToast(`⚠️ AI 分類暫時無法使用：${result.errorMessage || '請確認 GEMINI_API_KEY 設定'}`);
+        return;
+      }
+
+      const existingTags = editForm.tags
+        .split(',')
+        .map(t => t.trim())
+        .filter(Boolean);
+      const mergedTags = Array.from(new Set([...existingTags, ...result.tags]));
+
+      setEditForm(prev => ({
+        ...prev,
+        city: result.city,
+        area: result.area,
+        tags: mergedTags.join(', '),
+      }));
+      showToast(`✨ AI 已更新為：${result.city} · ${result.area}`);
+    } finally {
+      setIsAiClassifyingEdit(false);
+    }
   };
 
   const saveEdit = () => {
@@ -295,12 +401,13 @@ export default function App() {
     });
   };
 
-  // 共用 Google Places Text Search (New) 請求函式：優先透過本地代理繞過開發環境 Referer 限制，靜態部署時自動切換直連
-  const executePlacesSearch = async (payload: Record<string, unknown>) => {
+  // 共用底層 Google Places Text Search 函式 (回傳結果或錯誤訊息，供一般搜尋與 AI 批次比對共用)
+  const fetchPlacesFromApi = async (
+    payload: Record<string, unknown>
+  ): Promise<{ places: GooglePlace[]; error: string | null }> => {
     const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
     if (!apiKey) {
-      setSearchError('尚未設定 VITE_GOOGLE_MAPS_API_KEY 環境變數。');
-      return;
+      return { places: [], error: '尚未設定 VITE_GOOGLE_MAPS_API_KEY 環境變數。' };
     }
 
     const headers = {
@@ -309,8 +416,6 @@ export default function App() {
       'X-Goog-FieldMask':
         'places.id,places.displayName,places.formattedAddress,places.addressComponents,places.nationalPhoneNumber,places.rating,places.userRatingCount,places.regularOpeningHours,places.location',
     };
-
-    setSearchError(null);
 
     // 開發預覽環境 (DEV) 透過 Vite Proxy 繞過 Referer 限制；Vercel 正式環境 (PROD) 直接呼叫官方 API
     const endpoint = import.meta.env.DEV
@@ -328,17 +433,29 @@ export default function App() {
     if (!response.ok || data.error) {
       const errStatus = data.error?.status || response.status;
       if (response.status === 403 || errStatus === 'PERMISSION_DENIED') {
-        setSearchError(
-          `API 金鑰網域限制 (403 PERMISSION_DENIED)：請至 Google Cloud Console 的 API 金鑰「網站限制 (HTTP Referrers)」加入目前網址：${window.location.origin}/*`
-        );
-      } else {
-        setSearchError(`搜尋失敗 (${errStatus})：${data.error?.message || '請確認 API 金鑰與 Places API (New) 是否已啟用'}`);
+        return {
+          places: [],
+          error: `API 金鑰網域限制 (403 PERMISSION_DENIED)：請至 Google Cloud Console 的 API 金鑰「網站限制 (HTTP Referrers)」加入目前網址：${window.location.origin}/*`,
+        };
       }
+      return {
+        places: [],
+        error: `搜尋失敗 (${errStatus})：${data.error?.message || '請確認 API 金鑰與 Places API (New) 是否已啟用'}`,
+      };
+    }
+
+    return { places: data.places || [], error: null };
+  };
+
+  // 一般搜尋與分店搜尋封裝
+  const executePlacesSearch = async (payload: Record<string, unknown>) => {
+    setSearchError(null);
+    const { places, error } = await fetchPlacesFromApi(payload);
+    if (error) {
+      setSearchError(error);
       setResults([]);
       return;
     }
-
-    const places: GooglePlace[] = data.places || [];
     setResults(places);
     if (places.length === 0) {
       setSearchError('找不到符合的地點，請嘗試其他關鍵字。');
@@ -354,6 +471,7 @@ export default function App() {
     const brandName = displayNameStr.split('-')[0].split('(')[0].split(' ')[0].trim();
 
     setActiveTab('search');
+    setSearchMode('keyword');
     setSearchQuery(brandName);
 
     if (!targetPlace.location?.latitude) {
@@ -408,7 +526,7 @@ export default function App() {
     }
   };
 
-  // 🌟 修改提議 2：在「加入清單」當下就自動執行 Google Sheet + GeoNames 翻譯，直接把中文寫入 customCity 與 customArea
+  // 🌟 接上 Gemini：儲存地點瞬間自動轉成繁體中文「城市 + 商圈」並自動打上標籤
   const handleSaveLocation = async () => {
     if (!selectedLocation || isSaving) return;
     if (savedPlaces.some(place => place.id === selectedLocation.id)) {
@@ -418,21 +536,209 @@ export default function App() {
 
     setIsSaving(true);
     try {
-      const resolved = await resolveTranslatedCityAndArea(selectedLocation);
+      const classified = await classifyPlaceWithGeminiApi(selectedLocation);
+      const mergedTags = Array.from(
+        new Set([...(selectedLocation.customTags || []), ...classified.tags])
+      );
+
       const placeToSave: GooglePlace = {
         ...selectedLocation,
-        customCity: selectedLocation.customCity || resolved.city,
-        customArea: selectedLocation.customArea || resolved.area,
+        customCity: selectedLocation.customCity || classified.city,
+        customArea: selectedLocation.customArea || classified.area,
+        customTags: mergedTags,
       };
 
       const newSavedPlaces = [placeToSave, ...savedPlaces];
       setSavedPlaces(newSavedPlaces);
       localStorage.setItem('amazing_locations', JSON.stringify(newSavedPlaces));
-      showToast(`🎉 成功加入清單！（已歸類至：${placeToSave.customCity} · ${placeToSave.customArea}）`);
+
+      const tagPreview = mergedTags.length > 0 ? `｜${mergedTags.map(t => `#${t}`).join(' ')}` : '';
+      showToast(`🎉 已加入清單！（${placeToSave.customCity} · ${placeToSave.customArea}${tagPreview}）`);
       setSearchQuery('');
       setSelectedLocation(null);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  // ✨ 處理截圖上傳或貼上剪貼簿圖片
+  const handleExtractImageFile = (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      setExtractError('請選擇圖片格式的截圖檔案（PNG / JPG / WebP）。');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      const commaIdx = dataUrl.indexOf(',');
+      if (commaIdx === -1) return;
+      const base64 = dataUrl.slice(commaIdx + 1);
+      setExtractImagePreview(dataUrl);
+      setExtractImageData({ base64, mimeType: file.type || 'image/png' });
+      setExtractError(null);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handlePasteInExtractor = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          handleExtractImageFile(file);
+          showToast('📸 已從剪貼簿貼上截圖！');
+          break;
+        }
+      }
+    }
+  };
+
+  // ✨ 呼叫 Gemini 從文字或截圖智能擷取所有店名與景點，並透過 Google Places 取得真實地點資料
+  const handleSmartExtract = async () => {
+    if (!extractText.trim() && !extractImageData) {
+      setExtractError('請貼上旅遊文章／貼文文字，或上傳／貼上截圖！');
+      return;
+    }
+
+    setIsExtracting(true);
+    setExtractError(null);
+    setExtractedItems([]);
+
+    try {
+      const geminiRes = await fetch('/api/gemini/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: extractText.trim(),
+          imageBase64: extractImageData?.base64,
+          mimeType: extractImageData?.mimeType,
+        }),
+      });
+
+      const geminiData = await geminiRes.json();
+      if (!geminiRes.ok) {
+        setExtractError(geminiData?.error || `Gemini 擷取失敗 (${geminiRes.status})`);
+        return;
+      }
+
+      const rawCandidates: Array<{
+        name: string;
+        searchQuery: string;
+        hintCity: string;
+        hintArea: string;
+        tags: string[];
+        note: string;
+      }> = Array.isArray(geminiData.places) ? geminiData.places : [];
+
+      if (rawCandidates.length === 0) {
+        setExtractError('這段內容或截圖中沒有偵測到明確的餐廳或景點名稱，請試著補充更多細節。');
+        return;
+      }
+
+      // 平行向 Google Places API (New) 搜尋每個擷取到的地點，確保擁有真實座標、Place ID 與地址
+      const existingIds = new Set(savedPlaces.map(p => p.id));
+      const resolvedList: ExtractedCandidateItem[] = await Promise.all(
+        rawCandidates.map(async (item, index) => {
+          const { places } = await fetchPlacesFromApi({
+            textQuery: item.searchQuery || item.name,
+            languageCode: 'zh-TW',
+            maxResultCount: 1,
+          }).catch(() => ({ places: [] as GooglePlace[] }));
+
+          const matched = places[0] || null;
+          const isAlreadySaved = Boolean(matched && existingIds.has(matched.id));
+          const matchStatus: ExtractedCandidateItem['matchStatus'] = !matched
+            ? 'not_found'
+            : isAlreadySaved
+              ? 'already_saved'
+              : 'matched';
+
+          return {
+            key: `${index}-${item.name}`,
+            extractedName: item.name,
+            searchQuery: item.searchQuery || item.name,
+            hintCity: item.hintCity || '',
+            hintArea: item.hintArea || '',
+            tags: Array.isArray(item.tags) ? item.tags : [],
+            note: item.note || '',
+            matchedPlace: matched,
+            matchStatus,
+            selected: matchStatus === 'matched',
+          };
+        })
+      );
+
+      setExtractedItems(resolvedList);
+    } catch (err) {
+      console.error('智能擷取錯誤:', err);
+      setExtractError('智能擷取過程中發生錯誤，請檢查網路或 API 金鑰設定。');
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  // ✨ 一鍵將擷取並比對成功的景點直接加入收藏清單（同步執行中文商圈與標籤分類）
+  const handleBatchSaveExtracted = async () => {
+    const itemsToSave = extractedItems.filter(item => item.selected && item.matchedPlace);
+    if (itemsToSave.length === 0 || isBatchSaving) {
+      showToast('⚠️ 請至少勾選一個有效的地點！');
+      return;
+    }
+
+    setIsBatchSaving(true);
+    try {
+      const existingMap = new Map(savedPlaces.map(p => [p.id, p]));
+      const newlyPrepared: GooglePlace[] = [];
+
+      for (const item of itemsToSave) {
+        const place = item.matchedPlace;
+        if (!place || existingMap.has(place.id)) continue;
+
+        let city = item.hintCity;
+        let area = item.hintArea;
+        let aiTags = [...item.tags];
+
+        if (!city || !area || aiTags.length === 0) {
+          const classified = await classifyPlaceWithGeminiApi(place);
+          city = city || classified.city;
+          area = area || classified.area;
+          aiTags = Array.from(new Set([...aiTags, ...classified.tags]));
+        }
+
+        const prepared: GooglePlace = {
+          ...place,
+          customCity: city || '未分類城市',
+          customArea: area || '未分類區域',
+          customTags: aiTags,
+          customNote: item.note,
+          note: item.note,
+          notes: item.note,
+        };
+        existingMap.set(place.id, prepared);
+        newlyPrepared.push(prepared);
+      }
+
+      if (newlyPrepared.length === 0) {
+        showToast('⚠️ 勾選的地點皆已存在於清單中。');
+        return;
+      }
+
+      const updatedPlaces = [...newlyPrepared, ...savedPlaces];
+      setSavedPlaces(updatedPlaces);
+      localStorage.setItem('amazing_locations', JSON.stringify(updatedPlaces));
+
+      showToast(`🎉 成功加入 ${newlyPrepared.length} 個新景點至「我的清單」！`);
+      setExtractedItems([]);
+      setExtractText('');
+      setExtractImagePreview(null);
+      setExtractImageData(null);
+      setActiveTab('list');
+    } finally {
+      setIsBatchSaving(false);
     }
   };
 
@@ -445,24 +751,70 @@ export default function App() {
         setCenterId(null);
         setNearbyIds([]);
       }
+      setSelectedDeleteIds(prev => prev.filter(itemId => itemId !== id));
+      setSelectedExportIds(prev => prev.filter(itemId => itemId !== id));
     }
+  };
+
+  // 執行批次刪除多個已選取地點
+  const executeBatchDelete = () => {
+    if (selectedDeleteIds.length === 0) return;
+    const deleteSet = new Set(selectedDeleteIds);
+    const deletedCount = savedPlaces.filter(p => deleteSet.has(p.id)).length;
+    const updatedPlaces = savedPlaces.filter(place => !deleteSet.has(place.id));
+
+    setSavedPlaces(updatedPlaces);
+    localStorage.setItem('amazing_locations', JSON.stringify(updatedPlaces));
+
+    if (centerId && deleteSet.has(centerId)) {
+      setCenterId(null);
+      setNearbyIds([]);
+    } else {
+      setNearbyIds(prev => prev.filter(id => !deleteSet.has(id)));
+    }
+
+    setSelectedExportIds(prev => prev.filter(id => !deleteSet.has(id)));
+    setSelectedDeleteIds([]);
+    setShowBatchDeleteConfirm(false);
+    setIsDeleteSelectMode(false);
+    showToast(`🗑️ 已批次刪除 ${deletedCount} 個地點`);
   };
 
   const toggleCard = (id: string) => {
     setExpandedCards(prev => prev.includes(id) ? prev.filter(cardId => cardId !== id) : [...prev, id]);
   };
 
-  // 🌟 修改提議 4：支援「整城／整區一鍵全選」或取消全選
+  const isAnySelectionMode = isExportMode || isDeleteSelectMode;
+  const activeSelectedIds = isDeleteSelectMode ? selectedDeleteIds : selectedExportIds;
+
+  const togglePlaceSelection = (placeId: string) => {
+    if (isDeleteSelectMode) {
+      setSelectedDeleteIds(prev =>
+        prev.includes(placeId) ? prev.filter(id => id !== placeId) : [...prev, placeId]
+      );
+    } else if (isExportMode) {
+      setSelectedExportIds(prev =>
+        prev.includes(placeId) ? prev.filter(id => id !== placeId) : [...prev, placeId]
+      );
+    }
+  };
+
+  // 支援「整城／整區一鍵全選」或取消全選（同時適用於 Trip Plan 匯出與批次刪除模式）
   const toggleSelectGroupIds = (placeIds: string[]) => {
-    setSelectedExportIds(prev => {
+    const updater = (prev: string[]) => {
       const allSelected = placeIds.length > 0 && placeIds.every(id => prev.includes(id));
       if (allSelected) {
         return prev.filter(id => !placeIds.includes(id));
-      } else {
-        const nextSet = new Set([...prev, ...placeIds]);
-        return Array.from(nextSet);
       }
-    });
+      const nextSet = new Set([...prev, ...placeIds]);
+      return Array.from(nextSet);
+    };
+
+    if (isDeleteSelectMode) {
+      setSelectedDeleteIds(updater);
+    } else {
+      setSelectedExportIds(updater);
+    }
   };
 
   const openInGoogleMaps = (place: GooglePlace) => {
@@ -803,63 +1155,297 @@ export default function App() {
 
       <div className="mx-auto max-w-md px-4">
 
-        {/* === 🔍 搜尋分頁 === */}
+        {/* === 🔍 搜尋 & AI 智能擷取分頁 === */}
         {activeTab === 'search' && (
           <div className="animate-in fade-in duration-300">
-            <form onSubmit={handleSearch} className="relative rounded-2xl bg-white p-2 shadow-sm ring-1 ring-gray-200 focus-within:ring-2 focus-within:ring-blue-500">
-              <input
-                type="text"
-                className="w-full bg-transparent px-4 py-3 pr-24 text-base outline-none placeholder:text-gray-400"
-                placeholder="輸入景點、店名或地址..."
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  if (searchError) setSearchError(null);
-                }}
-              />
-              <button type="submit" disabled={isSearching} className="absolute right-2 top-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-blue-700 disabled:opacity-50">
-                {isSearching ? '搜尋中...' : '搜尋'}
+            {/* 模式切換列：關鍵字搜尋 / ✨ AI 貼文・截圖智能擷取 */}
+            <div className="mb-3 grid grid-cols-2 gap-1.5 rounded-2xl bg-gray-200/70 p-1">
+              <button
+                type="button"
+                onClick={() => setSearchMode('keyword')}
+                className={`py-2 rounded-xl text-xs font-bold transition-all ${
+                  searchMode === 'keyword'
+                    ? 'bg-white text-blue-600 shadow-xs'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                🔍 關鍵字搜尋
               </button>
-            </form>
+              <button
+                type="button"
+                onClick={() => setSearchMode('ai_extract')}
+                className={`py-2 rounded-xl text-xs font-bold transition-all ${
+                  searchMode === 'ai_extract'
+                    ? 'bg-white text-indigo-600 shadow-xs'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                ✨ AI 貼文・截圖擷取
+              </button>
+            </div>
 
-            {searchError && (
-              <div className="mt-3 rounded-2xl bg-amber-50 border border-amber-200 p-3.5 text-xs text-amber-900 leading-relaxed break-all">
-                ⚠️ {searchError}
-              </div>
-            )}
+            {searchMode === 'keyword' ? (
+              <>
+                <form onSubmit={handleSearch} className="relative rounded-2xl bg-white p-2 shadow-sm ring-1 ring-gray-200 focus-within:ring-2 focus-within:ring-blue-500">
+                  <input
+                    type="text"
+                    className="w-full bg-transparent px-4 py-3 pr-24 text-base outline-none placeholder:text-gray-400"
+                    placeholder="輸入景點、店名或地址..."
+                    value={searchQuery}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      if (searchError) setSearchError(null);
+                    }}
+                  />
+                  <button type="submit" disabled={isSearching} className="absolute right-2 top-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-blue-700 disabled:opacity-50">
+                    {isSearching ? '搜尋中...' : '搜尋'}
+                  </button>
+                </form>
 
-            {results.length > 0 && (
-              <ul className="relative z-10 mt-2 w-full rounded-2xl bg-white py-2 shadow-xl ring-1 ring-black/5 max-h-64 overflow-auto">
-                {results.map((place) => (
-                  <li key={place.id} onClick={() => { setSelectedLocation(place); setResults([]); setSearchQuery(place.displayName?.text || '未知名稱'); }} className="cursor-pointer px-5 py-3 hover:bg-blue-50 border-b border-gray-50 last:border-0">
-                    <div className="font-bold text-gray-900">{place.displayName?.text || '未知名稱'}</div>
-                    <div className="text-xs text-gray-500 truncate mt-1">{place.formattedAddress || '無詳細地址'}</div>
-                  </li>
-                ))}
-              </ul>
-            )}
+                {searchError && (
+                  <div className="mt-3 rounded-2xl bg-amber-50 border border-amber-200 p-3.5 text-xs text-amber-900 leading-relaxed break-all">
+                    ⚠️ {searchError}
+                  </div>
+                )}
 
-            {selectedLocation && (
-              <div className="mt-6 rounded-3xl bg-white p-5 shadow-xl ring-1 ring-black/5 animate-in slide-in-from-top-4 fade-in duration-300">
-                <h3 className="text-xl font-bold text-gray-900">{selectedLocation.displayName?.text || '未知名稱'}</h3>
-                <div className="mt-2 flex flex-wrap gap-2 text-sm">
-                  <span className="rounded-md bg-blue-50 text-blue-700 px-2 py-1 font-medium">{getCountryCityArea(selectedLocation.addressComponents || []).country}</span>
-                  <span className="rounded-md bg-gray-100 px-2 py-1 font-medium text-gray-600">{getCountryCityArea(selectedLocation.addressComponents || []).city}</span>
-                  {selectedLocation.rating && <span className="text-amber-500 font-bold ml-1">⭐ {selectedLocation.rating}</span>}
+                {results.length > 0 && (
+                  <ul className="relative z-10 mt-2 w-full rounded-2xl bg-white py-2 shadow-xl ring-1 ring-black/5 max-h-64 overflow-auto">
+                    {results.map((place) => (
+                      <li key={place.id} onClick={() => { setSelectedLocation(place); setResults([]); setSearchQuery(place.displayName?.text || '未知名稱'); }} className="cursor-pointer px-5 py-3 hover:bg-blue-50 border-b border-gray-50 last:border-0">
+                        <div className="font-bold text-gray-900">{place.displayName?.text || '未知名稱'}</div>
+                        <div className="text-xs text-gray-500 truncate mt-1">{place.formattedAddress || '無詳細地址'}</div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {selectedLocation && (
+                  <div className="mt-6 rounded-3xl bg-white p-5 shadow-xl ring-1 ring-black/5 animate-in slide-in-from-top-4 fade-in duration-300">
+                    <h3 className="text-xl font-bold text-gray-900">{selectedLocation.displayName?.text || '未知名稱'}</h3>
+                    <div className="mt-2 flex flex-wrap gap-2 text-sm">
+                      <span className="rounded-md bg-blue-50 text-blue-700 px-2 py-1 font-medium">{getCountryCityArea(selectedLocation.addressComponents || []).country}</span>
+                      <span className="rounded-md bg-gray-100 px-2 py-1 font-medium text-gray-600">{getCountryCityArea(selectedLocation.addressComponents || []).city}</span>
+                      {selectedLocation.rating && <span className="text-amber-500 font-bold ml-1">⭐ {selectedLocation.rating}</span>}
+                    </div>
+
+                    <div className="mt-4 text-sm text-gray-600 bg-gray-50 p-4 rounded-xl border border-gray-100">
+                      <div className="flex items-start"><span className="mr-2">📍</span><span>{selectedLocation.formattedAddress || '無詳細地址'}</span></div>
+                      {renderOpeningHours(selectedLocation.regularOpeningHours)}
+                    </div>
+
+                    <button
+                      onClick={handleSaveLocation}
+                      disabled={isSaving}
+                      className="mt-5 w-full rounded-xl bg-blue-600 py-3.5 text-sm font-bold text-white shadow-md transition hover:bg-blue-700 active:scale-95 disabled:opacity-60"
+                    >
+                      {isSaving ? '✨ AI 正在辨識商圈與標籤...' : '✨ 加到我的清單（AI 自動分類與標籤）'}
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              /* ✨ AI 智能擷取景點面板 (文字 / 截圖) */
+              <div className="space-y-3 animate-in fade-in duration-200">
+                <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-gray-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <h2 className="text-sm font-extrabold text-gray-800 flex items-center gap-1.5">
+                      <span>✨</span> 智能擷取整段文字或截圖
+                    </h2>
+                    {(extractText || extractImagePreview) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExtractText('');
+                          setExtractImagePreview(null);
+                          setExtractImageData(null);
+                          setExtractedItems([]);
+                          setExtractError(null);
+                        }}
+                        className="text-xs font-bold text-gray-400 hover:text-gray-600"
+                      >
+                        清空
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mb-3 leading-relaxed">
+                    貼上 IG／Threads／遊記文章，或直接上傳／貼上（Ctrl+V）旅遊截圖，AI 會自動抓出所有店名與景點、標註中文商圈與標籤，一鍵加入清單！
+                  </p>
+
+                  <textarea
+                    rows={4}
+                    value={extractText}
+                    onChange={(e) => {
+                      setExtractText(e.target.value);
+                      if (extractError) setExtractError(null);
+                    }}
+                    onPaste={handlePasteInExtractor}
+                    placeholder="例如：大阪三天兩夜必吃！第一天晚上去道頓堀「燒肉力丸」，隔天早上吃黑門市場海鮮，下午逛心齋橋 HARBS 吃千層蛋糕，最後買老爺爺起司蛋糕當伴手禮..."
+                    className="w-full rounded-xl border border-gray-200 bg-gray-50/70 p-3 text-sm outline-none focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100 transition resize-y"
+                  />
+
+                  <input
+                    ref={extractImageInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleExtractImageFile(file);
+                      e.target.value = '';
+                    }}
+                    className="hidden"
+                  />
+
+                  {extractImagePreview && (
+                    <div className="mt-3 relative rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
+                      <img
+                        src={extractImagePreview}
+                        alt="待辨識截圖"
+                        className="max-h-48 w-full object-contain"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExtractImagePreview(null);
+                          setExtractImageData(null);
+                        }}
+                        className="absolute top-2 right-2 bg-black/70 text-white text-xs font-bold px-2.5 py-1 rounded-lg hover:bg-black"
+                      >
+                        ✕ 移除圖片
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => extractImageInputRef.current?.click()}
+                      className="px-3.5 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold transition flex items-center gap-1.5 shrink-0"
+                    >
+                      <span>🖼️</span> 上傳截圖
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSmartExtract}
+                      disabled={isExtracting}
+                      className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold shadow-sm transition active:scale-[0.99] disabled:opacity-60"
+                    >
+                      {isExtracting ? '✨ AI 正在分析並搜尋地點...' : '✨ 開始智能擷取'}
+                    </button>
+                  </div>
                 </div>
 
-                <div className="mt-4 text-sm text-gray-600 bg-gray-50 p-4 rounded-xl border border-gray-100">
-                  <div className="flex items-start"><span className="mr-2">📍</span><span>{selectedLocation.formattedAddress || '無詳細地址'}</span></div>
-                  {renderOpeningHours(selectedLocation.regularOpeningHours)}
-                </div>
+                {extractError && (
+                  <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3.5 text-xs text-amber-900 leading-relaxed">
+                    ⚠️ {extractError}
+                  </div>
+                )}
 
-                <button
-                  onClick={handleSaveLocation}
-                  disabled={isSaving}
-                  className="mt-5 w-full rounded-xl bg-blue-600 py-3.5 text-sm font-bold text-white shadow-md transition hover:bg-blue-700 active:scale-95 disabled:opacity-60"
-                >
-                  {isSaving ? '正在翻譯區域並加入清單...' : '加到我的清單'}
-                </button>
+                {extractedItems.length > 0 && (
+                  <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-indigo-200 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-sm font-extrabold text-gray-900">
+                        📍 擷取結果（共 {extractedItems.length} 個）
+                      </h3>
+                      <span className="text-xs font-bold text-indigo-600">
+                        已選 {extractedItems.filter(i => i.selected && i.matchedPlace).length} 個
+                      </span>
+                    </div>
+
+                    <div className="space-y-2.5 max-h-80 overflow-y-auto pr-0.5">
+                      {extractedItems.map((item) => {
+                        const isMatched = item.matchStatus === 'matched';
+                        const isDuplicate = item.matchStatus === 'already_saved';
+                        const isNotFound = item.matchStatus === 'not_found';
+
+                        return (
+                          <div
+                            key={item.key}
+                            onClick={() => {
+                              if (!item.matchedPlace || isDuplicate) return;
+                              setExtractedItems(prev =>
+                                prev.map(p => (p.key === item.key ? { ...p, selected: !p.selected } : p))
+                              );
+                            }}
+                            className={`rounded-xl p-3 border transition ${
+                              isNotFound
+                                ? 'bg-gray-50 border-gray-200 opacity-70'
+                                : isDuplicate
+                                  ? 'bg-emerald-50/50 border-emerald-200'
+                                  : item.selected
+                                    ? 'bg-indigo-50/50 border-indigo-400 cursor-pointer'
+                                    : 'bg-white border-gray-200 cursor-pointer hover:bg-gray-50'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2.5">
+                              {isMatched && (
+                                <div
+                                  className={`mt-0.5 shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition ${
+                                    item.selected ? 'bg-indigo-600 border-indigo-600 text-white' : 'border-gray-300 bg-white'
+                                  }`}
+                                >
+                                  {item.selected && <span className="text-xs">✓</span>}
+                                </div>
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <span className="font-bold text-sm text-gray-900">
+                                    {item.matchedPlace?.displayName?.text || item.extractedName}
+                                  </span>
+                                  {isDuplicate && (
+                                    <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">
+                                      ✓ 已在清單中
+                                    </span>
+                                  )}
+                                  {isNotFound && (
+                                    <span className="text-[10px] font-bold bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full">
+                                      未找到 Google 地點
+                                    </span>
+                                  )}
+                                </div>
+
+                                {item.matchedPlace?.formattedAddress && (
+                                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                                    📍 {item.matchedPlace.formattedAddress}
+                                  </p>
+                                )}
+
+                                <div className="mt-1.5 flex flex-wrap gap-1">
+                                  {(item.hintCity || item.hintArea) && (
+                                    <span className="text-[10px] font-bold bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded">
+                                      {[item.hintCity, item.hintArea].filter(Boolean).join(' · ')}
+                                    </span>
+                                  )}
+                                  {item.tags.map((tag, idx) => (
+                                    <span key={idx} className="text-[10px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
+                                      #{tag}
+                                    </span>
+                                  ))}
+                                </div>
+
+                                {item.note && (
+                                  <p className="mt-1.5 text-[11px] text-amber-800 bg-amber-50 border border-amber-200/70 px-2 py-1 rounded-lg">
+                                    📝 {item.note}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleBatchSaveExtracted}
+                      disabled={isBatchSaving || extractedItems.filter(i => i.selected && i.matchedPlace).length === 0}
+                      className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold shadow-md transition active:scale-95 disabled:opacity-50"
+                    >
+                      {isBatchSaving
+                        ? '✨ 正在分類並加入清單...'
+                        : `📥 一鍵加入我的清單 (${extractedItems.filter(i => i.selected && i.matchedPlace).length})`}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -961,22 +1547,77 @@ export default function App() {
                   })}
                 </div>
 
-                {/* 匯出至 Trip Plan 與 JSON 備份工具列 */}
+                {/* 匯出至 Trip Plan、批次選取刪除與 JSON 備份工具列 */}
                 <div className="mb-2 flex items-center justify-between gap-2 flex-wrap">
                   <div className="flex items-center gap-2 flex-wrap">
                     {isExportMode ? (
                       <>
-                        <button onClick={() => { setIsExportMode(false); setSelectedExportIds([]); }} className="whitespace-nowrap px-3 py-2 text-sm font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors">
+                        <button
+                          type="button"
+                          onClick={() => { setIsExportMode(false); setSelectedExportIds([]); }}
+                          className="whitespace-nowrap px-3 py-2 text-sm font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"
+                        >
                           取消
                         </button>
-                        <button onClick={handleRichExport} className="whitespace-nowrap px-3.5 py-2 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-full transition-colors shadow-md">
+                        <button
+                          type="button"
+                          onClick={handleRichExport}
+                          className="whitespace-nowrap px-3.5 py-2 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-full transition-colors shadow-md"
+                        >
                           傳送 ({selectedExportIds.length})
+                        </button>
+                      </>
+                    ) : isDeleteSelectMode ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => { setIsDeleteSelectMode(false); setSelectedDeleteIds([]); }}
+                          className="whitespace-nowrap px-3 py-2 text-sm font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"
+                        >
+                          取消選取
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleSelectGroupIds(displayPlaces.map(p => p.id))}
+                          className="whitespace-nowrap px-3 py-2 text-sm font-bold text-gray-700 bg-white ring-1 ring-gray-300 hover:bg-gray-50 rounded-full transition-colors"
+                        >
+                          {displayPlaces.length > 0 && displayPlaces.every(p => selectedDeleteIds.includes(p.id))
+                            ? '取消全選'
+                            : `全選顯示 (${displayPlaces.length})`}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={selectedDeleteIds.length === 0}
+                          onClick={() => setShowBatchDeleteConfirm(true)}
+                          className="whitespace-nowrap px-3.5 py-2 text-sm font-bold text-white bg-red-600 hover:bg-red-700 rounded-full transition-colors shadow-md disabled:opacity-40"
+                        >
+                          🗑️ 刪除所選 ({selectedDeleteIds.length})
                         </button>
                       </>
                     ) : (
                       <>
-                        <button onClick={() => setIsExportMode(true)} className="whitespace-nowrap px-3.5 py-2 text-sm font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-full transition-colors flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsDeleteSelectMode(false);
+                            setSelectedDeleteIds([]);
+                            setIsExportMode(true);
+                          }}
+                          className="whitespace-nowrap px-3.5 py-2 text-sm font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-full transition-colors flex items-center gap-1"
+                        >
                           <span>✈️</span> 傳送到 Trip Plan
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsExportMode(false);
+                            setSelectedExportIds([]);
+                            setSelectedDeleteIds([]);
+                            setIsDeleteSelectMode(true);
+                          }}
+                          className="whitespace-nowrap px-3.5 py-2 text-sm font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-full transition-colors flex items-center gap-1"
+                        >
+                          <span>☑️</span> 選取模式
                         </button>
                         <button
                           type="button"
@@ -999,6 +1640,11 @@ export default function App() {
                   {isExportMode && (
                     <span className="text-xs text-blue-600 font-medium">
                       💡 可直接點選城市或區域旁「全選」
+                    </span>
+                  )}
+                  {isDeleteSelectMode && (
+                    <span className="text-xs text-rose-600 font-medium">
+                      💡 點選景點卡片或城市／區域「全選」來批次移除
                     </span>
                   )}
                 </div>
@@ -1030,29 +1676,39 @@ export default function App() {
                           const areaLabel = place.customArea || autoLoc.area;
                           const cityLabel = place.customCity || autoLoc.city;
                           const noteText = place.customNote || place.note || place.notes || '';
-                          const isSelectedForExport = selectedExportIds.includes(place.id);
+                          const isSelectedItem = activeSelectedIds.includes(place.id);
 
                           return (
                             <div
                               key={`nearby-top-${place.id}`}
                               onClick={() => {
-                                if (isExportMode) {
-                                  setSelectedExportIds(prev =>
-                                    prev.includes(place.id) ? prev.filter(id => id !== place.id) : [...prev, place.id]
-                                  );
+                                if (isAnySelectionMode) {
+                                  togglePlaceSelection(place.id);
                                 } else {
                                   toggleCard(place.id);
                                 }
                               }}
                               className={`bg-white rounded-xl p-2.5 border border-amber-200 shadow-xs flex items-center justify-between gap-2 cursor-pointer hover:bg-amber-50/40 transition ${
-                                isSelectedForExport ? 'ring-2 ring-blue-500' : ''
+                                isSelectedItem
+                                  ? isDeleteSelectMode
+                                    ? 'ring-2 ring-red-500'
+                                    : 'ring-2 ring-blue-500'
+                                  : ''
                               }`}
                             >
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-1.5 flex-wrap">
-                                  {isExportMode && (
-                                    <div className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center ${isSelectedForExport ? 'bg-blue-500 border-blue-500 text-white' : 'border-gray-300'}`}>
-                                      {isSelectedForExport && <span className="text-[10px]">✓</span>}
+                                  {isAnySelectionMode && (
+                                    <div
+                                      className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center ${
+                                        isSelectedItem
+                                          ? isDeleteSelectMode
+                                            ? 'bg-red-600 border-red-600 text-white'
+                                            : 'bg-blue-500 border-blue-500 text-white'
+                                          : 'border-gray-300'
+                                      }`}
+                                    >
+                                      {isSelectedItem && <span className="text-[10px]">✓</span>}
                                     </div>
                                   )}
                                   <span className="text-xs font-extrabold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
@@ -1169,7 +1825,7 @@ export default function App() {
                             const cityPlacesList = Object.values(areaGroups).flat();
                             const cityPlaceIds = cityPlacesList.map(p => p.id);
                             const cityTotalPlaces = cityPlacesList.length;
-                            const isAllCitySelected = cityPlaceIds.length > 0 && cityPlaceIds.every(id => selectedExportIds.includes(id));
+                            const isAllCitySelected = cityPlaceIds.length > 0 && cityPlaceIds.every(id => activeSelectedIds.includes(id));
 
                             return (
                               <div key={cityKey} className="border-b border-gray-50 last:border-0">
@@ -1184,7 +1840,7 @@ export default function App() {
                                   </h3>
 
                                   <div className="flex items-center gap-2">
-                                    {isExportMode && (
+                                    {isAnySelectionMode && (
                                       <button
                                         type="button"
                                         onClick={(e) => {
@@ -1193,8 +1849,12 @@ export default function App() {
                                         }}
                                         className={`px-2.5 py-1 rounded-full text-xs font-bold transition-colors ${
                                           isAllCitySelected
-                                            ? 'bg-blue-600 text-white shadow-xs'
-                                            : 'bg-blue-50 text-blue-600 hover:bg-blue-100 ring-1 ring-blue-200'
+                                            ? isDeleteSelectMode
+                                              ? 'bg-red-600 text-white shadow-xs'
+                                              : 'bg-blue-600 text-white shadow-xs'
+                                            : isDeleteSelectMode
+                                              ? 'bg-rose-50 text-rose-600 hover:bg-rose-100 ring-1 ring-rose-200'
+                                              : 'bg-blue-50 text-blue-600 hover:bg-blue-100 ring-1 ring-blue-200'
                                         }`}
                                       >
                                         {isAllCitySelected ? '✓ 已全選此城' : '全選此城'}
@@ -1212,7 +1872,7 @@ export default function App() {
                                       const areaKey = `${cityKey}-${area}`;
                                       const isAreaExpanded = !!expandedAreas[areaKey] || hasActiveSearch;
                                       const areaPlaceIds = places.map(p => p.id);
-                                      const isAllAreaSelected = areaPlaceIds.length > 0 && areaPlaceIds.every(id => selectedExportIds.includes(id));
+                                      const isAllAreaSelected = areaPlaceIds.length > 0 && areaPlaceIds.every(id => activeSelectedIds.includes(id));
                                       const currentSort = areaSortMap[areaKey] || 'default';
 
                                       // 依據該區域選擇的排序方式排序景點
@@ -1267,7 +1927,7 @@ export default function App() {
                                                 <option value="distance">距離 (近➔遠)</option>
                                               </select>
 
-                                              {isExportMode && (
+                                              {isAnySelectionMode && (
                                                 <button
                                                   type="button"
                                                   onClick={(e) => {
@@ -1276,8 +1936,12 @@ export default function App() {
                                                   }}
                                                   className={`px-2.5 py-0.5 rounded-full text-xs font-bold transition-colors ${
                                                     isAllAreaSelected
-                                                      ? 'bg-blue-600 text-white shadow-xs'
-                                                      : 'bg-blue-50 text-blue-600 hover:bg-blue-100 ring-1 ring-blue-200'
+                                                      ? isDeleteSelectMode
+                                                        ? 'bg-red-600 text-white shadow-xs'
+                                                        : 'bg-blue-600 text-white shadow-xs'
+                                                      : isDeleteSelectMode
+                                                        ? 'bg-rose-50 text-rose-600 hover:bg-rose-100 ring-1 ring-rose-200'
+                                                        : 'bg-blue-50 text-blue-600 hover:bg-blue-100 ring-1 ring-blue-200'
                                                   }`}
                                                 >
                                                   {isAllAreaSelected ? '✓ 已全選此區' : '全選此區'}
@@ -1295,6 +1959,7 @@ export default function App() {
                                                 const isExpanded = expandedCards.includes(place.id);
                                                 const isCenter = centerId === place.id;
                                                 const isNearby = nearbyIds.includes(place.id);
+                                                const isSelectedItem = activeSelectedIds.includes(place.id);
                                                 const noteText = place.customNote || place.note || place.notes || '';
                                                 const distanceFromCenter =
                                                   isNearby && centerPlace?.location?.latitude && place.location?.latitude
@@ -1309,22 +1974,49 @@ export default function App() {
                                                       : null;
 
                                                 return (
-                                                  <div key={place.id} className={`rounded-xl shadow-sm ring-1 overflow-hidden transition-all duration-300 ${isCenter ? 'ring-blue-500 bg-blue-50' : isNearby ? 'ring-yellow-400 bg-yellow-50' : 'ring-gray-200 bg-white'}`}>
+                                                  <div
+                                                    key={place.id}
+                                                    className={`rounded-xl shadow-sm ring-1 overflow-hidden transition-all duration-300 ${
+                                                      isSelectedItem && isDeleteSelectMode
+                                                        ? 'ring-2 ring-red-500 bg-rose-50/70'
+                                                        : isSelectedItem && isExportMode
+                                                          ? 'ring-2 ring-blue-500 bg-blue-50/40'
+                                                          : isCenter
+                                                            ? 'ring-blue-500 bg-blue-50'
+                                                            : isNearby
+                                                              ? 'ring-yellow-400 bg-yellow-50'
+                                                              : 'ring-gray-200 bg-white'
+                                                    }`}
+                                                  >
 
                                                     <div
-                                                      className={`p-3 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-gray-50 ${selectedExportIds.includes(place.id) ? 'bg-blue-50/50' : ''}`}
+                                                      className={`p-3 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-gray-50 ${
+                                                        isSelectedItem
+                                                          ? isDeleteSelectMode
+                                                            ? 'bg-rose-50/60'
+                                                            : 'bg-blue-50/50'
+                                                          : ''
+                                                      }`}
                                                       onClick={() => {
-                                                        if (isExportMode) {
-                                                          setSelectedExportIds(prev => prev.includes(place.id) ? prev.filter(id => id !== place.id) : [...prev, place.id]);
+                                                        if (isAnySelectionMode) {
+                                                          togglePlaceSelection(place.id);
                                                         } else {
                                                           toggleCard(place.id);
                                                         }
                                                       }}
                                                     >
                                                       <div className="flex items-center gap-3 flex-1 overflow-hidden">
-                                                        {isExportMode && (
-                                                          <div className={`shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors ${selectedExportIds.includes(place.id) ? 'bg-blue-500 border-blue-500' : 'border-gray-300'}`}>
-                                                            {selectedExportIds.includes(place.id) && <span className="text-white text-xs">✓</span>}
+                                                        {isAnySelectionMode && (
+                                                          <div
+                                                            className={`shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors ${
+                                                              isSelectedItem
+                                                                ? isDeleteSelectMode
+                                                                  ? 'bg-red-600 border-red-600'
+                                                                  : 'bg-blue-500 border-blue-500'
+                                                                : 'border-gray-300 bg-white'
+                                                            }`}
+                                                          >
+                                                            {isSelectedItem && <span className="text-white text-xs">✓</span>}
                                                           </div>
                                                         )}
 
@@ -1473,7 +2165,17 @@ export default function App() {
       {editingPlace && (
         <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl">
-            <h2 className="text-xl font-bold mb-4">✏️ 編輯地點資訊</h2>
+            <div className="flex items-center justify-between gap-2 mb-4">
+              <h2 className="text-xl font-bold">✏️ 編輯地點資訊</h2>
+              <button
+                type="button"
+                onClick={handleAiReclassifyInEdit}
+                disabled={isAiClassifyingEdit}
+                className="px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold transition disabled:opacity-50"
+              >
+                {isAiClassifyingEdit ? '✨ 辨識中...' : '✨ AI 自動分類與標籤'}
+              </button>
+            </div>
 
             <div className="space-y-4">
               <div>
@@ -1509,6 +2211,34 @@ export default function App() {
             <div className="mt-6 flex gap-3">
               <button onClick={() => setEditingPlace(null)} className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200">取消</button>
               <button onClick={saveEdit} className="flex-1 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700">儲存變更</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* === 🗑️ 批次刪除確認視窗 (Modal) === */}
+      {showBatchDeleteConfirm && (
+        <div className="fixed inset-0 bg-black/50 z-[110] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl animate-in fade-in duration-150">
+            <h2 className="text-lg font-extrabold text-gray-900 mb-2">🗑️ 確認批次刪除</h2>
+            <p className="text-sm text-gray-600 leading-relaxed">
+              確定要將所選的 <span className="font-extrabold text-red-600">{selectedDeleteIds.length}</span> 個地點從「我的清單」中移除嗎？此操作無法復原。
+            </p>
+            <div className="mt-5 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowBatchDeleteConfirm(false)}
+                className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200 transition-colors"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={executeBatchDelete}
+                className="flex-1 py-2.5 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-colors shadow-sm"
+              >
+                確定刪除 ({selectedDeleteIds.length})
+              </button>
             </div>
           </div>
         </div>
