@@ -33,6 +33,31 @@ const FOLDER_ICON_MAP: Record<string, string> = {
 
 const getFolderIcon = (folder: string) => FOLDER_ICON_MAP[folder] || '📁';
 
+const PRESET_CATEGORY_TAGS = [
+  { label: '飲食', icon: '🍽️' },
+  { label: '景點', icon: '🏛️' },
+  { label: '購物', icon: '🛍️' },
+] as const;
+
+const PRESET_CATEGORY_LABELS: readonly string[] = PRESET_CATEGORY_TAGS.map(t => t.label);
+
+const parseTagInput = (raw: string): string[] =>
+  Array.from(
+    new Set(
+      raw
+        .split(/[,，]/)
+        .map(t => t.replace(/^#/, '').trim())
+        .filter(Boolean)
+    )
+  );
+
+const toggleTagInString = (raw: string, tagLabel: string): string => {
+  const tags = parseTagInput(raw);
+  const exists = tags.includes(tagLabel);
+  const nextTags = exists ? tags.filter(t => t !== tagLabel) : [tagLabel, ...tags];
+  return nextTags.join(', ');
+};
+
 const TAIWAN_CITY_REGEX =
   /(臺北市|台北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|屏東縣|宜蘭縣|花蓮縣|臺東縣|台東縣|澎湖縣|金門縣|連江縣)/;
 
@@ -249,6 +274,7 @@ export default function App() {
   const [folderPickerTarget, setFolderPickerTarget] = useState<string | null>(null);
   const [saveIsFavorite, setSaveIsFavorite] = useState(false);
   const [saveFolderSelection, setSaveFolderSelection] = useState<string[]>([]);
+  const [saveTagsInput, setSaveTagsInput] = useState('');
 
   const [listSearchQuery, setListSearchQuery] = useState('');
   const [selectedCountryTab, setSelectedCountryTab] = useState<string>('全部');
@@ -621,10 +647,7 @@ export default function App() {
         return;
       }
 
-      const existingTags = editForm.tags
-        .split(',')
-        .map(t => t.trim())
-        .filter(Boolean);
+      const existingTags = parseTagInput(editForm.tags);
       const mergedTags = Array.from(new Set([...existingTags, ...result.tags]));
 
       setEditForm(prev => ({
@@ -649,7 +672,7 @@ export default function App() {
           customName: editForm.name,
           customCity: editForm.city,
           customArea: editForm.area,
-          customTags: editForm.tags.split(',').map(t => t.trim()).filter(t => t !== ''),
+          customTags: parseTagInput(editForm.tags),
           customNote: trimmedNote,
           note: trimmedNote,
           notes: trimmedNote,
@@ -858,8 +881,9 @@ export default function App() {
     setIsSaving(true);
     try {
       const classified = await classifyPlaceWithGeminiApi(selectedLocation);
+      const manualTags = parseTagInput(saveTagsInput);
       const mergedTags = Array.from(
-        new Set([...(selectedLocation.customTags || []), ...classified.tags])
+        new Set([...manualTags, ...(selectedLocation.customTags || []), ...classified.tags])
       );
 
       const placeToSave = normalizePlaceData({
@@ -880,6 +904,7 @@ export default function App() {
       setSelectedLocation(null);
       setSaveIsFavorite(false);
       setSaveFolderSelection([]);
+      setSaveTagsInput('');
     } finally {
       setIsSaving(false);
     }
@@ -1433,6 +1458,7 @@ export default function App() {
   const tagCloudList = Object.entries(tagCountsMap).sort(
     (a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-Hant')
   );
+  const detailTagCloudList = tagCloudList.filter(([tag]) => !PRESET_CATEGORY_LABELS.includes(tag));
 
   const groupedByLocation = displayPlaces.reduce((acc, place) => {
     const { country, city, area } = getCountryCityArea(place.addressComponents || [], place.formattedAddress || '');
@@ -1771,6 +1797,7 @@ export default function App() {
                           setSelectedLocation(place);
                           setSaveIsFavorite(false);
                           setSaveFolderSelection([]);
+                          setSaveTagsInput('');
                           setResults([]);
                           setSearchQuery(place.displayName?.text || '未知名稱');
                         }}
@@ -1799,6 +1826,37 @@ export default function App() {
                     <div className="mt-4 text-sm text-gray-600 bg-gray-50 p-4 rounded-xl border border-gray-100">
                       <div className="flex items-start"><span className="mr-2">📍</span><span>{selectedLocation.formattedAddress || '無詳細地址'}</span></div>
                       {renderOpeningHours(selectedLocation.regularOpeningHours)}
+                    </div>
+
+                    <div className="mt-4">
+                      <label className="block text-xs font-bold text-gray-500 mb-1.5">🏷️ 自訂標籤（可留空由 AI 自動補上，用逗號分隔）</label>
+                      <input
+                        type="text"
+                        value={saveTagsInput}
+                        onChange={(e) => setSaveTagsInput(e.target.value)}
+                        placeholder="例如：飲食, 拉麵, 必吃（儲存時將與 AI 標籤合併）"
+                        className="w-full rounded-xl border border-gray-200 bg-gray-50/70 px-3 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
+                      />
+                      <div className="mt-2 flex items-center flex-wrap gap-1.5">
+                        <span className="text-[11px] font-bold text-gray-400">大分類：</span>
+                        {PRESET_CATEGORY_TAGS.map(preset => {
+                          const isSelected = parseTagInput(saveTagsInput).includes(preset.label);
+                          return (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              onClick={() => setSaveTagsInput(prev => toggleTagInString(prev, preset.label))}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors border ${
+                                isSelected
+                                  ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                                  : 'bg-white text-gray-700 border-gray-200 hover:bg-blue-50'
+                              }`}
+                            >
+                              {preset.icon} {preset.label}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
 
                     <div className="mt-4">
@@ -2201,12 +2259,12 @@ export default function App() {
                   />
                 </div>
 
-                {/* 🌟 標籤雲區塊：自動統計並列出目前所有已儲存地點的自訂標籤，點擊即可篩選 */}
-                {tagCloudList.length > 0 && (
-                  <div className="mb-3 rounded-2xl bg-white p-3 shadow-xs ring-1 ring-gray-200/80">
+                {/* 🌟 大分類快速過濾（飲食／景點／購物）＋ 自訂標籤雲快速篩選 */}
+                <div className="mb-3 rounded-2xl bg-white p-3 shadow-xs ring-1 ring-gray-200/80 space-y-2.5">
+                  <div>
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-xs font-bold text-gray-500 flex items-center gap-1">
-                        <span>🏷️</span> 標籤雲快速篩選
+                        <span>🗂️</span> 大分類快速過濾
                       </span>
                       {selectedTag && (
                         <button
@@ -2214,28 +2272,31 @@ export default function App() {
                           onClick={() => setSelectedTag(null)}
                           className="text-[11px] font-bold text-blue-600 hover:text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full transition-colors"
                         >
-                          ✕ 清除標籤 ({selectedTag})
+                          ✕ 清除篩選 ({selectedTag})
                         </button>
                       )}
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                      {tagCloudList.map(([tag, count]) => {
-                        const isTagSelected = selectedTag === tag;
+                      {PRESET_CATEGORY_TAGS.map(preset => {
+                        const isTagSelected = selectedTag === preset.label;
+                        const count = tagCountsMap[preset.label] || 0;
                         return (
                           <button
-                            key={tag}
+                            key={preset.label}
                             type="button"
-                            onClick={() => setSelectedTag(prev => (prev === tag ? null : tag))}
-                            className={`px-2.5 py-1 rounded-full text-xs font-bold transition-all flex items-center gap-1 ${
+                            onClick={() => setSelectedTag(prev => (prev === preset.label ? null : preset.label))}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border ${
                               isTagSelected
-                                ? 'bg-blue-600 text-white shadow-xs scale-[1.02]'
-                                : 'bg-blue-50/80 text-blue-700 hover:bg-blue-100 ring-1 ring-blue-200/60'
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                                : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-blue-50 hover:border-blue-200'
                             }`}
                           >
-                            <span>#{tag}</span>
+                            <span>
+                              {preset.icon} {preset.label}
+                            </span>
                             <span
                               className={`text-[10px] px-1.5 rounded-full ${
-                                isTagSelected ? 'bg-blue-500 text-white' : 'bg-white/90 text-blue-600'
+                                isTagSelected ? 'bg-blue-500 text-white' : 'bg-white text-gray-600 ring-1 ring-gray-200/80'
                               }`}
                             >
                               {count}
@@ -2245,7 +2306,41 @@ export default function App() {
                       })}
                     </div>
                   </div>
-                )}
+
+                  {detailTagCloudList.length > 0 && (
+                    <div className="pt-2 border-t border-gray-100">
+                      <div className="text-xs font-bold text-gray-500 flex items-center gap-1 mb-2">
+                        <span>🏷️</span> 標籤雲快速篩選
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {detailTagCloudList.map(([tag, count]) => {
+                          const isTagSelected = selectedTag === tag;
+                          return (
+                            <button
+                              key={tag}
+                              type="button"
+                              onClick={() => setSelectedTag(prev => (prev === tag ? null : tag))}
+                              className={`px-2.5 py-1 rounded-full text-xs font-bold transition-all flex items-center gap-1 ${
+                                isTagSelected
+                                  ? 'bg-blue-600 text-white shadow-xs scale-[1.02]'
+                                  : 'bg-blue-50/80 text-blue-700 hover:bg-blue-100 ring-1 ring-blue-200/60'
+                              }`}
+                            >
+                              <span>#{tag}</span>
+                              <span
+                                className={`text-[10px] px-1.5 rounded-full ${
+                                  isTagSelected ? 'bg-blue-500 text-white' : 'bg-white/90 text-blue-600'
+                                }`}
+                              >
+                                {count}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 {/* 🌟 修改提議 5：補回國家快速篩選列 (全部 / 🇯🇵 日本 / 🇹🇼 台灣 / 🇰🇷 韓國) */}
                 <div className="mb-3 flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
@@ -2989,7 +3084,32 @@ export default function App() {
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1 font-bold">自訂標籤 (用逗號分隔)</label>
-                <input type="text" value={editForm.tags} onChange={e => setEditForm({...editForm, tags: e.target.value})} className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="例如：餐廳, 拉麵, 必去" />
+                <input type="text" value={editForm.tags} onChange={e => setEditForm({...editForm, tags: e.target.value})} className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="例如：飲食, 拉麵, 必去" />
+                <div className="mt-2 flex items-center flex-wrap gap-1.5">
+                  <span className="text-[11px] font-bold text-gray-500">預設大分類：</span>
+                  {PRESET_CATEGORY_TAGS.map(preset => {
+                    const isSelected = parseTagInput(editForm.tags).includes(preset.label);
+                    return (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() =>
+                          setEditForm(prev => ({
+                            ...prev,
+                            tags: toggleTagInString(prev.tags, preset.label),
+                          }))
+                        }
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors border ${
+                          isSelected
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                            : 'bg-gray-50 text-gray-700 border-gray-300 hover:bg-blue-50 hover:border-blue-300'
+                        }`}
+                      >
+                        {preset.icon} {preset.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1.5 font-bold">📂 我的最愛與清單夾分類</label>
