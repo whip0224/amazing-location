@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useCityTranslations } from './hooks/useCityTranslations';
 import { getChineseNameByCoords } from './utils/geonamesApi';
 
@@ -21,6 +21,96 @@ const formatDistance = (distanceKm: number) => {
     return `${Math.round(distanceKm * 1000)}m`;
   }
   return `${distanceKm.toFixed(1)}km`;
+};
+
+const DEFAULT_CUSTOM_FOLDERS = ['待去', '已去', '行程規劃'] as const;
+
+const FOLDER_ICON_MAP: Record<string, string> = {
+  待去: '📌',
+  已去: '✅',
+  行程規劃: '🗓️',
+};
+
+const getFolderIcon = (folder: string) => FOLDER_ICON_MAP[folder] || '📁';
+
+const TAIWAN_CITY_REGEX =
+  /(臺北市|台北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|屏東縣|宜蘭縣|花蓮縣|臺東縣|台東縣|澎湖縣|金門縣|連江縣)/;
+
+const TAIWAN_VILLAGE_SUFFIX_REGEX = /[里村鄰]$/;
+
+const isTaiwanAddressOrComponents = (
+  components: { longText: string; types?: string[] }[] = [],
+  formattedAddress = ''
+) => {
+  const country = components.find(c => c.types?.includes('country'))?.longText || '';
+  if (country.includes('台灣') || country.includes('臺灣') || country.toLowerCase() === 'taiwan') {
+    return true;
+  }
+  return (
+    formattedAddress.includes('台灣') ||
+    formattedAddress.includes('臺灣') ||
+    /\bTaiwan\b/i.test(formattedAddress) ||
+    TAIWAN_CITY_REGEX.test(formattedAddress)
+  );
+};
+
+const extractTaiwanCityAndDistrict = (
+  components: { longText: string; types?: string[] }[] = [],
+  formattedAddress = ''
+): { city: string; district: string } => {
+  const safeComponents = Array.isArray(components) ? components : [];
+  let city: string;
+  let district = '';
+
+  const level1 = safeComponents.find(c => c.types?.includes('administrative_area_level_1'))?.longText?.trim() || '';
+  const level2 = safeComponents.find(c => c.types?.includes('administrative_area_level_2'))?.longText?.trim() || '';
+
+  if (level1 && !level1.includes('台灣省') && !level1.includes('臺灣省') && !level1.includes('福建省')) {
+    city = level1;
+  } else if (level2) {
+    city = level2;
+  } else {
+    city = safeComponents.find(c => c.types?.includes('locality'))?.longText?.trim() || '';
+  }
+
+  const candidateTypes = [
+    'administrative_area_level_2',
+    'administrative_area_level_3',
+    'sublocality_level_1',
+    'locality',
+  ];
+
+  for (const type of candidateTypes) {
+    const match = safeComponents.find(c => c.types?.includes(type))?.longText?.trim();
+    if (
+      match &&
+      match !== city &&
+      !TAIWAN_VILLAGE_SUFFIX_REGEX.test(match) &&
+      !match.includes('省') &&
+      /[區鎮鄉市]$/.test(match)
+    ) {
+      district = match;
+      break;
+    }
+  }
+
+  const addr = formattedAddress.trim();
+  if (addr) {
+    const cityMatch = addr.match(TAIWAN_CITY_REGEX);
+    if (!city && cityMatch) {
+      city = cityMatch[1];
+    }
+    if (!district) {
+      const distMatch = addr.match(
+        /(?:臺北市|台北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|屏東縣|宜蘭縣|花蓮縣|臺東縣|台東縣|澎湖縣|金門縣|連江縣)\s*([^\d\s號樓路街巷弄里村鄰]{1,5}?[區鎮鄉市])/
+      );
+      if (distMatch && distMatch[1]) {
+        district = distMatch[1].trim();
+      }
+    }
+  }
+
+  return { city, district };
 };
 
 // --- 資料結構 ---
@@ -50,7 +140,41 @@ interface GooglePlace {
   customNote?: string;
   note?: string;
   notes?: string;
+  isFavorite?: boolean;
+  lists?: string[];
 }
+
+const normalizePlaceData = (place: GooglePlace): GooglePlace => {
+  const components = Array.isArray(place.addressComponents) ? place.addressComponents : [];
+  const addr = place.formattedAddress || '';
+  let nextCustomCity = place.customCity;
+  let nextCustomArea = place.customArea;
+
+  if (isTaiwanAddressOrComponents(components, addr)) {
+    const { city, district } = extractTaiwanCityAndDistrict(components, addr);
+    if (nextCustomCity && (nextCustomCity.includes('台灣省') || nextCustomCity.includes('臺灣省')) && city) {
+      nextCustomCity = city;
+    }
+    if (
+      district &&
+      (!nextCustomArea ||
+        nextCustomArea === '未分類區域' ||
+        TAIWAN_VILLAGE_SUFFIX_REGEX.test(nextCustomArea.trim()))
+    ) {
+      nextCustomArea = district;
+    }
+  }
+
+  return {
+    ...place,
+    customCity: nextCustomCity,
+    customArea: nextCustomArea,
+    isFavorite: Boolean(place.isFavorite),
+    lists: Array.isArray(place.lists)
+      ? Array.from(new Set(place.lists.map(l => String(l).trim()).filter(Boolean)))
+      : [],
+  };
+};
 
 interface ExtractedCandidateItem {
   key: string;
@@ -90,11 +214,42 @@ export default function App() {
   const [savedPlaces, setSavedPlaces] = useState<GooglePlace[]>(() => {
     try {
       const localData = localStorage.getItem('amazing_locations');
-      return localData ? JSON.parse(localData) : [];
+      const parsed = localData ? JSON.parse(localData) : [];
+      if (!Array.isArray(parsed)) return [];
+      const normalized = parsed.map((p: GooglePlace) => normalizePlaceData(p));
+      localStorage.setItem('amazing_locations', JSON.stringify(normalized));
+      return normalized;
     } catch {
       return [];
     }
   });
+  const [customFolders, setCustomFolders] = useState<string[]>(() => {
+    try {
+      const savedFoldersRaw = localStorage.getItem('amazing_custom_folders');
+      const parsedFolders: string[] = savedFoldersRaw ? JSON.parse(savedFoldersRaw) : [];
+      const localPlacesRaw = localStorage.getItem('amazing_locations');
+      const parsedPlaces: GooglePlace[] = localPlacesRaw ? JSON.parse(localPlacesRaw) : [];
+      const foldersFromPlaces = Array.isArray(parsedPlaces)
+        ? parsedPlaces.flatMap(p => (Array.isArray(p.lists) ? p.lists : []))
+        : [];
+      return Array.from(
+        new Set([
+          ...DEFAULT_CUSTOM_FOLDERS,
+          ...(Array.isArray(parsedFolders) ? parsedFolders : []),
+          ...foldersFromPlaces,
+        ])
+      ).filter(Boolean);
+    } catch {
+      return [...DEFAULT_CUSTOM_FOLDERS];
+    }
+  });
+  const [activeCollectionView, setActiveCollectionView] = useState<string>('all');
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [folderPickerTarget, setFolderPickerTarget] = useState<string | null>(null);
+  const [saveIsFavorite, setSaveIsFavorite] = useState(false);
+  const [saveFolderSelection, setSaveFolderSelection] = useState<string[]>([]);
+
   const [listSearchQuery, setListSearchQuery] = useState('');
   const [selectedCountryTab, setSelectedCountryTab] = useState<string>('全部');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
@@ -110,6 +265,8 @@ export default function App() {
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [toastNotice, setToastNotice] = useState<string | null>(null);
+  const [geminiStatus, setGeminiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [geminiStatusReason, setGeminiStatusReason] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = (msg: string) => {
@@ -117,6 +274,98 @@ export default function App() {
     window.setTimeout(() => {
       setToastNotice(prev => (prev === msg ? null : prev));
     }, 4000);
+  };
+
+  const refreshGeminiStatus = useCallback(async (showFeedback = false) => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setGeminiStatus('offline');
+      setGeminiStatusReason('裝置目前無網路連線');
+      if (showFeedback) showToast('🔴 Gemini 離線：裝置目前無網路連線');
+      return;
+    }
+
+    if (showFeedback) {
+      setGeminiStatus('checking');
+    }
+
+    try {
+      const res = await fetch('/api/gemini/status', { cache: 'no-store' });
+      const data = await res.json();
+      if (res.ok && data?.online) {
+        setGeminiStatus('online');
+        setGeminiStatusReason(null);
+        if (showFeedback) showToast('🟢 Gemini 已連線（在線）');
+      } else {
+        const reason = data?.reason || `HTTP ${res.status}`;
+        setGeminiStatus('offline');
+        setGeminiStatusReason(reason);
+        if (showFeedback) showToast(`🔴 Gemini 離線：${reason}`);
+      }
+    } catch {
+      setGeminiStatus('offline');
+      setGeminiStatusReason('無法連線至後端伺服器');
+      if (showFeedback) showToast('🔴 Gemini 離線：無法連線至後端伺服器');
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    const runInitialCheck = async () => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        if (active) {
+          setGeminiStatus('offline');
+          setGeminiStatusReason('裝置目前無網路連線');
+        }
+        return;
+      }
+      try {
+        const res = await fetch('/api/gemini/status', { cache: 'no-store' });
+        const data = await res.json();
+        if (!active) return;
+        if (res.ok && data?.online) {
+          setGeminiStatus('online');
+          setGeminiStatusReason(null);
+        } else {
+          setGeminiStatus('offline');
+          setGeminiStatusReason(data?.reason || `HTTP ${res.status}`);
+        }
+      } catch {
+        if (active) {
+          setGeminiStatus('offline');
+          setGeminiStatusReason('無法連線至後端伺服器');
+        }
+      }
+    };
+
+    const handleOnline = () => {
+      void refreshGeminiStatus(false);
+    };
+    const handleOffline = () => {
+      setGeminiStatus('offline');
+      setGeminiStatusReason('裝置目前無網路連線');
+    };
+
+    void runInitialCheck();
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      active = false;
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [refreshGeminiStatus]);
+
+  const persistPlaces = (updatedPlaces: GooglePlace[]) => {
+    setSavedPlaces(updatedPlaces);
+    localStorage.setItem('amazing_locations', JSON.stringify(updatedPlaces));
+  };
+
+  const persistFolders = (updatedFolders: string[]) => {
+    const merged = Array.from(new Set([...DEFAULT_CUSTOM_FOLDERS, ...updatedFolders])).filter(Boolean);
+    setCustomFolders(merged);
+    localStorage.setItem('amazing_custom_folders', JSON.stringify(merged));
   };
 
   // 📝 紀錄三層分類的折疊狀態
@@ -130,33 +379,57 @@ export default function App() {
 
   // --- 📝 編輯功能狀態 ---
   const [editingPlace, setEditingPlace] = useState<GooglePlace | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', city: '', area: '', tags: '', note: '' });
+  const [editForm, setEditForm] = useState({
+    name: '',
+    city: '',
+    area: '',
+    tags: '',
+    note: '',
+    isFavorite: false,
+    lists: [] as string[],
+  });
   const [isAiClassifyingEdit, setIsAiClassifyingEdit] = useState(false);
 
-  // 🌟 2. 升級版：自動抓取並搭配 Google Sheet 的資料進行翻譯比對
-  const getCountryCityArea = (components: GooglePlace['addressComponents'] = []) => {
+  // 🌟 2. 升級版：自動抓取並搭配 Google Sheet 的資料進行翻譯比對（含台灣區名修正，避免抓到里/村/鄰）
+  const getCountryCityArea = (
+    components: GooglePlace['addressComponents'] = [],
+    formattedAddress = ''
+  ) => {
     const safeComponents = Array.isArray(components) ? components : [];
 
     const country = safeComponents.find(c => c.types?.includes('country'))?.longText || '';
 
-    let city = safeComponents.find(c =>
-      c.types?.includes('administrative_area_level_1') ||
-      c.types?.includes('locality')
-    )?.longText || '';
-
-    // 設定嚴格的優先層級 (優先找「區」，找不到再找「町/商圈」)
-    let area =
-      safeComponents.find(c => c.types?.includes('sublocality_level_1'))?.longText ||
-      safeComponents.find(c => c.types?.includes('sublocality_level_2'))?.longText ||
-      safeComponents.find(c => c.types?.includes('neighborhood'))?.longText ||
-      safeComponents.find(c => c.types?.includes('administrative_area_level_2'))?.longText ||
-      safeComponents.find(c => c.types?.includes('administrative_area_level_3'))?.longText ||
-      '';
-
-    const normalizedCountry = country.includes('台灣') || country === 'Taiwan' ? '🇹🇼 台灣' :
+    const normalizedCountry = country.includes('台灣') || country.includes('臺灣') || country === 'Taiwan' ? '🇹🇼 台灣' :
                               country.includes('日本') || country === 'Japan' ? '🇯🇵 日本' :
                               country.includes('韓國') || country === 'South Korea' ? '🇰🇷 韓國' :
                               country || '🌍 其他地區';
+
+    let city = '';
+    let area = '';
+
+    if (normalizedCountry === '🇹🇼 台灣' || isTaiwanAddressOrComponents(safeComponents, formattedAddress)) {
+      const tw = extractTaiwanCityAndDistrict(safeComponents, formattedAddress);
+      city = tw.city;
+      area = tw.district;
+    }
+
+    if (!city) {
+      city = safeComponents.find(c =>
+        c.types?.includes('administrative_area_level_1') ||
+        c.types?.includes('locality')
+      )?.longText || '';
+    }
+
+    if (!area) {
+      // 設定嚴格的優先層級 (優先找「區」，找不到再找「町/商圈」)
+      area =
+        safeComponents.find(c => c.types?.includes('sublocality_level_1'))?.longText ||
+        safeComponents.find(c => c.types?.includes('sublocality_level_2'))?.longText ||
+        safeComponents.find(c => c.types?.includes('neighborhood'))?.longText ||
+        safeComponents.find(c => c.types?.includes('administrative_area_level_2'))?.longText ||
+        safeComponents.find(c => c.types?.includes('administrative_area_level_3'))?.longText ||
+        '';
+    }
 
     // 使用 Google Sheet 抓回來的 translations 狀態進行字串取代
     Object.keys(translations).forEach(key => {
@@ -181,9 +454,13 @@ export default function App() {
 
   // 共用：解析並翻譯城市與區域 (Google Sheet + GeoNames 雙層防護)
   const resolveTranslatedCityAndArea = async (place: GooglePlace) => {
-    const autoLocation = getCountryCityArea(place.addressComponents || []);
+    const autoLocation = getCountryCityArea(place.addressComponents || [], place.formattedAddress || '');
+    const isTaiwan = autoLocation.country === '🇹🇼 台灣';
     let finalCityName = place.customCity || autoLocation.city;
-    const rawArea = place.customArea || autoLocation.area;
+    const rawArea =
+      place.customArea && !(isTaiwan && TAIWAN_VILLAGE_SUFFIX_REGEX.test(place.customArea.trim()))
+        ? place.customArea
+        : autoLocation.area;
     let finalAreaName = rawArea;
 
     // 城市檢查 Google Sheet
@@ -235,12 +512,25 @@ export default function App() {
 
       const data = await response.json();
       if (response.ok && data && typeof data.city === 'string' && typeof data.area === 'string') {
+        setGeminiStatus('online');
+        setGeminiStatusReason(null);
+        const autoLoc = getCountryCityArea(place.addressComponents || [], place.formattedAddress || '');
+        const isTaiwan = autoLoc.country === '🇹🇼 台灣';
+        let finalArea = data.area.trim() || '未分類區域';
+        if (isTaiwan && (finalArea === '未分類區域' || TAIWAN_VILLAGE_SUFFIX_REGEX.test(finalArea))) {
+          finalArea = autoLoc.area || finalArea;
+        }
         return {
           city: data.city.trim() || '未分類城市',
-          area: data.area.trim() || '未分類區域',
+          area: finalArea,
           tags: Array.isArray(data.tags) ? data.tags.map((t: string) => t.trim()).filter(Boolean) : [],
           usedGemini: true,
         };
+      }
+
+      if (response.status === 400 || response.status === 401 || response.status === 403 || response.status >= 500) {
+        setGeminiStatus('offline');
+        setGeminiStatusReason(data?.error || `HTTP ${response.status}`);
       }
 
       const fallback = await resolveTranslatedCityAndArea(place);
@@ -252,6 +542,8 @@ export default function App() {
       };
     } catch (err) {
       console.warn('Gemini 分類失敗，自動改用備援分類:', err);
+      setGeminiStatus('offline');
+      setGeminiStatusReason(err instanceof Error ? err.message : '網路連線失敗');
       const fallback = await resolveTranslatedCityAndArea(place);
       return {
         ...fallback,
@@ -265,24 +557,34 @@ export default function App() {
   const openEditModal = async (place: GooglePlace) => {
     // 1. 設定目前正在編輯的地點與初始值
     setEditingPlace(place);
-    const autoLocation = getCountryCityArea(place.addressComponents || []);
+    const autoLocation = getCountryCityArea(place.addressComponents || [], place.formattedAddress || '');
+    const isTaiwan = autoLocation.country === '🇹🇼 台灣';
+    const hasInvalidTwArea = Boolean(
+      isTaiwan && place.customArea && TAIWAN_VILLAGE_SUFFIX_REGEX.test(place.customArea.trim())
+    );
+    const initialArea = hasInvalidTwArea ? autoLocation.area : place.customArea || autoLocation.area;
     const existingNote = place.customNote || place.note || place.notes || '';
 
     setEditForm({
       name: place.customName || place.displayName?.text || '未知名稱',
       city: place.customCity || autoLocation.city,
-      area: place.customArea || autoLocation.area,
+      area: initialArea,
       tags: place.customTags ? place.customTags.join(', ') : '',
       note: existingNote,
+      isFavorite: Boolean(place.isFavorite),
+      lists: Array.isArray(place.lists) ? [...place.lists] : [],
     });
 
     // 2. 若尚未有自訂中文城市／區域，執行補齊
-    if (!place.customCity || !place.customArea || place.customArea === '未分類區域') {
+    if (!place.customCity || !place.customArea || place.customArea === '未分類區域' || hasInvalidTwArea) {
       const resolved = await resolveTranslatedCityAndArea(place);
       setEditForm(prev => ({
         ...prev,
         city: place.customCity || resolved.city,
-        area: place.customArea && place.customArea !== '未分類區域' ? place.customArea : resolved.area,
+        area:
+          place.customArea && place.customArea !== '未分類區域' && !hasInvalidTwArea
+            ? place.customArea
+            : resolved.area,
       }));
     }
   };
@@ -333,12 +635,13 @@ export default function App() {
           customNote: trimmedNote,
           note: trimmedNote,
           notes: trimmedNote,
+          isFavorite: editForm.isFavorite,
+          lists: Array.from(new Set(editForm.lists)),
         };
       }
       return p;
     });
-    setSavedPlaces(updatedPlaces);
-    localStorage.setItem('amazing_locations', JSON.stringify(updatedPlaces));
+    persistPlaces(updatedPlaces);
     setEditingPlace(null);
   };
 
@@ -541,21 +844,24 @@ export default function App() {
         new Set([...(selectedLocation.customTags || []), ...classified.tags])
       );
 
-      const placeToSave: GooglePlace = {
+      const placeToSave = normalizePlaceData({
         ...selectedLocation,
         customCity: selectedLocation.customCity || classified.city,
         customArea: selectedLocation.customArea || classified.area,
         customTags: mergedTags,
-      };
+        isFavorite: saveIsFavorite,
+        lists: [...saveFolderSelection],
+      });
 
       const newSavedPlaces = [placeToSave, ...savedPlaces];
-      setSavedPlaces(newSavedPlaces);
-      localStorage.setItem('amazing_locations', JSON.stringify(newSavedPlaces));
+      persistPlaces(newSavedPlaces);
 
       const tagPreview = mergedTags.length > 0 ? `｜${mergedTags.map(t => `#${t}`).join(' ')}` : '';
       showToast(`🎉 已加入清單！（${placeToSave.customCity} · ${placeToSave.customArea}${tagPreview}）`);
       setSearchQuery('');
       setSelectedLocation(null);
+      setSaveIsFavorite(false);
+      setSaveFolderSelection([]);
     } finally {
       setIsSaving(false);
     }
@@ -621,9 +927,16 @@ export default function App() {
 
       const geminiData = await geminiRes.json();
       if (!geminiRes.ok) {
+        if (geminiRes.status === 400 || geminiRes.status === 401 || geminiRes.status === 403 || geminiRes.status >= 500) {
+          setGeminiStatus('offline');
+          setGeminiStatusReason(geminiData?.error || `HTTP ${geminiRes.status}`);
+        }
         setExtractError(geminiData?.error || `Gemini 擷取失敗 (${geminiRes.status})`);
         return;
       }
+
+      setGeminiStatus('online');
+      setGeminiStatusReason(null);
 
       const rawCandidates: Array<{
         name: string;
@@ -709,7 +1022,7 @@ export default function App() {
           aiTags = Array.from(new Set([...aiTags, ...classified.tags]));
         }
 
-        const prepared: GooglePlace = {
+        const prepared = normalizePlaceData({
           ...place,
           customCity: city || '未分類城市',
           customArea: area || '未分類區域',
@@ -717,7 +1030,7 @@ export default function App() {
           customNote: item.note,
           note: item.note,
           notes: item.note,
-        };
+        });
         existingMap.set(place.id, prepared);
         newlyPrepared.push(prepared);
       }
@@ -728,8 +1041,7 @@ export default function App() {
       }
 
       const updatedPlaces = [...newlyPrepared, ...savedPlaces];
-      setSavedPlaces(updatedPlaces);
-      localStorage.setItem('amazing_locations', JSON.stringify(updatedPlaces));
+      persistPlaces(updatedPlaces);
 
       showToast(`🎉 成功加入 ${newlyPrepared.length} 個新景點至「我的清單」！`);
       setExtractedItems([]);
@@ -745,8 +1057,7 @@ export default function App() {
   const handleDelete = (id: string, name: string) => {
     if (window.confirm(`確定要將「${name}」從清單移除嗎？`)) {
       const newSavedPlaces = savedPlaces.filter(place => place.id !== id);
-      setSavedPlaces(newSavedPlaces);
-      localStorage.setItem('amazing_locations', JSON.stringify(newSavedPlaces));
+      persistPlaces(newSavedPlaces);
       if (centerId === id) {
         setCenterId(null);
         setNearbyIds([]);
@@ -778,6 +1089,156 @@ export default function App() {
     setShowBatchDeleteConfirm(false);
     setIsDeleteSelectMode(false);
     showToast(`🗑️ 已批次刪除 ${deletedCount} 個地點`);
+  };
+
+  // ❤️ 切換單一地點「我的最愛」
+  const toggleFavorite = (placeId: string) => {
+    let nextState = false;
+    const updated = savedPlaces.map(p => {
+      if (p.id === placeId) {
+        nextState = !p.isFavorite;
+        return { ...p, isFavorite: nextState };
+      }
+      return p;
+    });
+    persistPlaces(updated);
+    showToast(nextState ? '❤️ 已加入我的最愛' : '🤍 已取消我的最愛');
+  };
+
+  // 📂 切換單一地點所屬清單夾
+  const togglePlaceInFolder = (placeId: string, folderName: string) => {
+    const updated = savedPlaces.map(p => {
+      if (p.id !== placeId) return p;
+      const currentLists = Array.isArray(p.lists) ? p.lists : [];
+      const exists = currentLists.includes(folderName);
+      const nextLists = exists
+        ? currentLists.filter(f => f !== folderName)
+        : [...currentLists, folderName];
+      return { ...p, lists: nextLists };
+    });
+    persistPlaces(updated);
+  };
+
+  // ➕ 新增自訂清單夾
+  const handleCreateCustomFolder = (rawName?: string): string | null => {
+    const trimmed = (rawName ?? newFolderName).trim();
+    if (!trimmed) {
+      showToast('⚠️ 請輸入清單夾名稱');
+      return null;
+    }
+    if (trimmed === '全部' || trimmed === '我的最愛' || trimmed === 'all' || trimmed === 'favorites') {
+      showToast('⚠️ 此名稱為系統保留分類，請使用其他名稱');
+      return null;
+    }
+    if (customFolders.includes(trimmed)) {
+      showToast(`⚠️「${trimmed}」清單夾已存在`);
+      setNewFolderName('');
+      setShowNewFolderInput(false);
+      return null;
+    }
+
+    const nextFolders = [...customFolders, trimmed];
+    persistFolders(nextFolders);
+    setNewFolderName('');
+    setShowNewFolderInput(false);
+    showToast(`📁 已新增清單夾「${trimmed}」`);
+    return trimmed;
+  };
+
+  // 🗑️ 刪除自訂清單夾（僅限非預設清單夾）
+  const handleDeleteCustomFolder = (folderName: string) => {
+    if ((DEFAULT_CUSTOM_FOLDERS as readonly string[]).includes(folderName)) return;
+    const nextFolders = customFolders.filter(f => f !== folderName);
+    persistFolders(nextFolders);
+    const updatedPlaces = savedPlaces.map(p => ({
+      ...p,
+      lists: Array.isArray(p.lists) ? p.lists.filter(f => f !== folderName) : [],
+    }));
+    persistPlaces(updatedPlaces);
+    if (activeCollectionView === folderName) {
+      setActiveCollectionView('all');
+    }
+    showToast(`🗑️ 已移除自訂清單夾「${folderName}」`);
+  };
+
+  // 🔄 切換清單檢視（全部 / 我的最愛 / 待去 / 已去 / 行程規劃 / 自訂清單夾）並展開符合項目
+  const handleSelectCollectionView = (view: string) => {
+    setActiveCollectionView(view);
+    if (view === 'all') return;
+
+    const matching = savedPlaces.filter(p =>
+      view === 'favorites' ? Boolean(p.isFavorite) : (p.lists || []).includes(view)
+    );
+
+    if (matching.length > 0) {
+      setExpandedRegions(prev => {
+        const next = { ...prev };
+        matching.forEach(p => {
+          const { country } = getCountryCityArea(p.addressComponents || [], p.formattedAddress || '');
+          next[country || '🌍 其他地區'] = true;
+        });
+        return next;
+      });
+      setExpandedCities(prev => {
+        const next = { ...prev };
+        matching.forEach(p => {
+          const { country, city } = getCountryCityArea(p.addressComponents || [], p.formattedAddress || '');
+          next[`${country || '🌍 其他地區'}-${p.customCity || city || '其他地區'}`] = true;
+        });
+        return next;
+      });
+      setExpandedAreas(prev => {
+        const next = { ...prev };
+        matching.forEach(p => {
+          const { country, city, area } = getCountryCityArea(p.addressComponents || [], p.formattedAddress || '');
+          const countryKey = country || '🌍 其他地區';
+          const cityName = p.customCity || city || '其他地區';
+          const areaName = p.customArea || area || '其他區域';
+          next[`${countryKey}-${cityName}-${areaName}`] = true;
+        });
+        return next;
+      });
+    }
+  };
+
+  // 📦 批次在選取模式中將多個地點加入／移出清單夾或最愛
+  const batchToggleFolderForSelected = (folderName: string) => {
+    if (selectedDeleteIds.length === 0) return;
+    const selectedSet = new Set(selectedDeleteIds);
+    const targetPlaces = savedPlaces.filter(p => selectedSet.has(p.id));
+    const allAlreadyInFolder =
+      targetPlaces.length > 0 && targetPlaces.every(p => (p.lists || []).includes(folderName));
+
+    const updated = savedPlaces.map(p => {
+      if (!selectedSet.has(p.id)) return p;
+      const currentLists = Array.isArray(p.lists) ? p.lists : [];
+      const nextLists = allAlreadyInFolder
+        ? currentLists.filter(f => f !== folderName)
+        : Array.from(new Set([...currentLists, folderName]));
+      return { ...p, lists: nextLists };
+    });
+
+    persistPlaces(updated);
+    showToast(
+      allAlreadyInFolder
+        ? `📂 已將 ${targetPlaces.length} 個地點從「${folderName}」移出`
+        : `📂 已將 ${targetPlaces.length} 個地點加入「${folderName}」`
+    );
+  };
+
+  const batchToggleFavoriteForSelected = () => {
+    if (selectedDeleteIds.length === 0) return;
+    const selectedSet = new Set(selectedDeleteIds);
+    const targetPlaces = savedPlaces.filter(p => selectedSet.has(p.id));
+    const allFav = targetPlaces.length > 0 && targetPlaces.every(p => Boolean(p.isFavorite));
+
+    const updated = savedPlaces.map(p => (selectedSet.has(p.id) ? { ...p, isFavorite: !allFav } : p));
+    persistPlaces(updated);
+    showToast(
+      allFav
+        ? `🤍 已將 ${targetPlaces.length} 個地點取消最愛`
+        : `❤️ 已將 ${targetPlaces.length} 個地點加入我的最愛`
+    );
   };
 
   const toggleCard = (id: string) => {
@@ -867,7 +1328,7 @@ export default function App() {
     if (!listSearchQuery.trim()) return true;
     const term = listSearchQuery.trim().toLowerCase();
     const termWithoutHash = term.startsWith('#') ? term.slice(1) : term;
-    const autoLoc = getCountryCityArea(place.addressComponents || []);
+    const autoLoc = getCountryCityArea(place.addressComponents || [], place.formattedAddress || '');
     const noteText = place.customNote || place.note || place.notes || '';
 
     const matchesText =
@@ -889,19 +1350,28 @@ export default function App() {
     return matchesText || matchesTags;
   });
 
-  const displayPlaces = filteredBySearch.filter(p => {
+  // 依「我的最愛」或「自訂清單夾」切換檢視過濾
+  const placesInCollectionView = filteredBySearch.filter(place => {
+    if (activeCollectionView === 'all') return true;
+    if (activeCollectionView === 'favorites') return Boolean(place.isFavorite);
+    return (place.lists || []).includes(activeCollectionView);
+  });
+
+  const displayPlaces = placesInCollectionView.filter(p => {
     const matchesCountry =
       selectedCountryTab === '全部' ||
-      getCountryCityArea(p.addressComponents || []).country === selectedCountryTab;
+      getCountryCityArea(p.addressComponents || [], p.formattedAddress || '').country === selectedCountryTab;
     const matchesSelectedTag =
       !selectedTag || (p.customTags || []).map(t => t.trim()).includes(selectedTag);
     return matchesCountry && matchesSelectedTag;
   });
 
-  // 統計標籤雲 (依目前所選國家分頁或全部已儲存地點統計所有自訂標籤數量)
+  // 統計標籤雲 (依目前清單夾檢視與國家分頁統計所有自訂標籤數量)
   const placesForTagCloud = selectedCountryTab === '全部'
-    ? savedPlaces
-    : savedPlaces.filter(p => getCountryCityArea(p.addressComponents || []).country === selectedCountryTab);
+    ? placesInCollectionView
+    : placesInCollectionView.filter(
+        p => getCountryCityArea(p.addressComponents || [], p.formattedAddress || '').country === selectedCountryTab
+      );
 
   const tagCountsMap = placesForTagCloud.reduce((acc, place) => {
     (place.customTags || []).forEach(rawTag => {
@@ -918,7 +1388,7 @@ export default function App() {
   );
 
   const groupedByLocation = displayPlaces.reduce((acc, place) => {
-    const { country, city, area } = getCountryCityArea(place.addressComponents || []);
+    const { country, city, area } = getCountryCityArea(place.addressComponents || [], place.formattedAddress || '');
     const countryKey = country || '🌍 其他地區';
     const cityKey = place.customCity || city || '其他地區';
     const areaKey = place.customArea || area || '其他區域';
@@ -1004,7 +1474,7 @@ export default function App() {
   // 國家快速篩選列選項 (固定顯示 全部 / 🇯🇵 日本 / 🇹🇼 台灣 / 🇰🇷 韓國，若有其他國家也動態補上)
   const baseCountryTabs = ['全部', '🇯🇵 日本', '🇹🇼 台灣', '🇰🇷 韓國'];
   const extraCountryTabs = Array.from(
-    new Set(savedPlaces.map(p => getCountryCityArea(p.addressComponents || []).country))
+    new Set(savedPlaces.map(p => getCountryCityArea(p.addressComponents || [], p.formattedAddress || '').country))
   ).filter(c => c && !baseCountryTabs.includes(c));
   const countryTabs = [...baseCountryTabs, ...extraCountryTabs];
 
@@ -1090,12 +1560,12 @@ export default function App() {
         .filter((item): item is GooglePlace => item && typeof item === 'object' && typeof item.id === 'string')
         .map(item => {
           const noteText = item.customNote || item.note || item.notes || '';
-          return {
+          return normalizePlaceData({
             ...item,
             customNote: noteText,
             note: noteText,
             notes: noteText,
-          };
+          });
         });
 
       if (validPlaces.length === 0) {
@@ -1117,8 +1587,13 @@ export default function App() {
       });
 
       const mergedPlaces = Array.from(existingMap.values());
-      setSavedPlaces(mergedPlaces);
-      localStorage.setItem('amazing_locations', JSON.stringify(mergedPlaces));
+      persistPlaces(mergedPlaces);
+
+      const importedFolders = validPlaces.flatMap(p => p.lists || []);
+      if (importedFolders.length > 0) {
+        persistFolders([...customFolders, ...importedFolders]);
+      }
+
       alert(`🎉 成功匯入 JSON 備份！\n共讀取 ${validPlaces.length} 個地點（新增 ${addedCount} 個、更新 ${updatedCount} 個）。`);
     } catch (err) {
       console.error('匯入備份失敗:', err);
@@ -1151,6 +1626,38 @@ export default function App() {
         <p className="mt-2 text-sm text-gray-500">
           {activeTab === 'search' ? '想去哪裡？剩下的交給我。' : `已收集 ${savedPlaces.length} 個超棒的地點`}
         </p>
+
+        <div className="mt-2.5 flex justify-center">
+          <button
+            type="button"
+            onClick={() => void refreshGeminiStatus(true)}
+            title={geminiStatusReason ? `點擊重新檢測（${geminiStatusReason}）` : '點擊重新檢測 Gemini 連線狀態'}
+            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold border transition-colors ${
+              geminiStatus === 'online'
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                : geminiStatus === 'offline'
+                  ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                  : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+            }`}
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                geminiStatus === 'online'
+                  ? 'bg-emerald-500'
+                  : geminiStatus === 'offline'
+                    ? 'bg-rose-500'
+                    : 'bg-amber-500 animate-pulse'
+              }`}
+            />
+            <span>
+              {geminiStatus === 'online'
+                ? 'Gemini 在線'
+                : geminiStatus === 'offline'
+                  ? 'Gemini 離線'
+                  : 'Gemini 連線檢測中...'}
+            </span>
+          </button>
+        </div>
       </div>
 
       <div className="mx-auto max-w-md px-4">
@@ -1211,7 +1718,17 @@ export default function App() {
                 {results.length > 0 && (
                   <ul className="relative z-10 mt-2 w-full rounded-2xl bg-white py-2 shadow-xl ring-1 ring-black/5 max-h-64 overflow-auto">
                     {results.map((place) => (
-                      <li key={place.id} onClick={() => { setSelectedLocation(place); setResults([]); setSearchQuery(place.displayName?.text || '未知名稱'); }} className="cursor-pointer px-5 py-3 hover:bg-blue-50 border-b border-gray-50 last:border-0">
+                      <li
+                        key={place.id}
+                        onClick={() => {
+                          setSelectedLocation(place);
+                          setSaveIsFavorite(false);
+                          setSaveFolderSelection([]);
+                          setResults([]);
+                          setSearchQuery(place.displayName?.text || '未知名稱');
+                        }}
+                        className="cursor-pointer px-5 py-3 hover:bg-blue-50 border-b border-gray-50 last:border-0"
+                      >
                         <div className="font-bold text-gray-900">{place.displayName?.text || '未知名稱'}</div>
                         <div className="text-xs text-gray-500 truncate mt-1">{place.formattedAddress || '無詳細地址'}</div>
                       </li>
@@ -1223,14 +1740,56 @@ export default function App() {
                   <div className="mt-6 rounded-3xl bg-white p-5 shadow-xl ring-1 ring-black/5 animate-in slide-in-from-top-4 fade-in duration-300">
                     <h3 className="text-xl font-bold text-gray-900">{selectedLocation.displayName?.text || '未知名稱'}</h3>
                     <div className="mt-2 flex flex-wrap gap-2 text-sm">
-                      <span className="rounded-md bg-blue-50 text-blue-700 px-2 py-1 font-medium">{getCountryCityArea(selectedLocation.addressComponents || []).country}</span>
-                      <span className="rounded-md bg-gray-100 px-2 py-1 font-medium text-gray-600">{getCountryCityArea(selectedLocation.addressComponents || []).city}</span>
+                      <span className="rounded-md bg-blue-50 text-blue-700 px-2 py-1 font-medium">
+                        {getCountryCityArea(selectedLocation.addressComponents || [], selectedLocation.formattedAddress || '').country}
+                      </span>
+                      <span className="rounded-md bg-gray-100 px-2 py-1 font-medium text-gray-600">
+                        {getCountryCityArea(selectedLocation.addressComponents || [], selectedLocation.formattedAddress || '').city}
+                      </span>
                       {selectedLocation.rating && <span className="text-amber-500 font-bold ml-1">⭐ {selectedLocation.rating}</span>}
                     </div>
 
                     <div className="mt-4 text-sm text-gray-600 bg-gray-50 p-4 rounded-xl border border-gray-100">
                       <div className="flex items-start"><span className="mr-2">📍</span><span>{selectedLocation.formattedAddress || '無詳細地址'}</span></div>
                       {renderOpeningHours(selectedLocation.regularOpeningHours)}
+                    </div>
+
+                    <div className="mt-4">
+                      <div className="text-xs font-bold text-gray-500 mb-2">📂 加入時順便分類（可複選，亦可稍後設定）</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setSaveIsFavorite(prev => !prev)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors border ${
+                            saveIsFavorite
+                              ? 'bg-rose-500 text-white border-rose-500 shadow-xs'
+                              : 'bg-white text-gray-600 border-gray-200 hover:bg-rose-50'
+                          }`}
+                        >
+                          {saveIsFavorite ? '❤️ 我的最愛' : '🤍 我的最愛'}
+                        </button>
+                        {customFolders.map(folder => {
+                          const isChosen = saveFolderSelection.includes(folder);
+                          return (
+                            <button
+                              key={folder}
+                              type="button"
+                              onClick={() =>
+                                setSaveFolderSelection(prev =>
+                                  prev.includes(folder) ? prev.filter(f => f !== folder) : [...prev, folder]
+                                )
+                              }
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors border ${
+                                isChosen
+                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                                  : 'bg-white text-gray-600 border-gray-200 hover:bg-indigo-50'
+                              }`}
+                            >
+                              {getFolderIcon(folder)} {folder}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
 
                     <button
@@ -1457,6 +2016,133 @@ export default function App() {
 
             {savedPlaces.length > 0 && (
               <>
+                {/* 🌟 我的最愛 & 自訂清單夾切換檢視列 */}
+                <div className="mb-3 rounded-2xl bg-white p-3 shadow-xs ring-1 ring-gray-200/80">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span className="text-xs font-bold text-gray-500 flex items-center gap-1">
+                      <span>📂</span> 清單分類檢視
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowNewFolderInput(prev => !prev)}
+                      className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg transition-colors"
+                    >
+                      {showNewFolderInput ? '取消新增' : '＋ 新增清單夾'}
+                    </button>
+                  </div>
+
+                  {showNewFolderInput && (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        handleCreateCustomFolder();
+                      }}
+                      className="mb-2.5 flex items-center gap-1.5"
+                    >
+                      <input
+                        type="text"
+                        value={newFolderName}
+                        onChange={(e) => setNewFolderName(e.target.value)}
+                        placeholder="輸入自訂清單夾名稱（如：必吃美食）..."
+                        className="flex-1 min-w-0 rounded-xl border border-indigo-200 bg-indigo-50/40 px-3 py-1.5 text-xs outline-none focus:border-indigo-500 focus:bg-white"
+                      />
+                      <button
+                        type="submit"
+                        className="shrink-0 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 transition-colors"
+                      >
+                        建立
+                      </button>
+                    </form>
+                  )}
+
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+                    <button
+                      type="button"
+                      onClick={() => handleSelectCollectionView('all')}
+                      className={`shrink-0 px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                        activeCollectionView === 'all'
+                          ? 'bg-gray-900 text-white shadow-xs'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      <span>📋 全部</span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                          activeCollectionView === 'all' ? 'bg-gray-700 text-white' : 'bg-white text-gray-600'
+                        }`}
+                      >
+                        {filteredBySearch.length}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSelectCollectionView('favorites')}
+                      className={`shrink-0 px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                        activeCollectionView === 'favorites'
+                          ? 'bg-rose-500 text-white shadow-xs'
+                          : 'bg-rose-50 text-rose-700 hover:bg-rose-100 ring-1 ring-rose-200/70'
+                      }`}
+                    >
+                      <span>❤️ 我的最愛</span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                          activeCollectionView === 'favorites' ? 'bg-rose-400 text-white' : 'bg-white text-rose-600'
+                        }`}
+                      >
+                        {filteredBySearch.filter(p => Boolean(p.isFavorite)).length}
+                      </span>
+                    </button>
+
+                    {customFolders.map(folder => {
+                      const isActive = activeCollectionView === folder;
+                      const isDefaultFolder = (DEFAULT_CUSTOM_FOLDERS as readonly string[]).includes(folder);
+                      const count = filteredBySearch.filter(p => (p.lists || []).includes(folder)).length;
+
+                      return (
+                        <div key={folder} className="shrink-0 flex items-center">
+                          <button
+                            type="button"
+                            onClick={() => handleSelectCollectionView(folder)}
+                            className={`px-3 py-1.5 text-xs font-bold transition-all flex items-center gap-1.5 ${
+                              isDefaultFolder ? 'rounded-xl' : 'rounded-l-xl'
+                            } ${
+                              isActive
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-indigo-50/80 text-indigo-700 hover:bg-indigo-100 ring-1 ring-indigo-200/70'
+                            }`}
+                          >
+                            <span>
+                              {getFolderIcon(folder)} {folder}
+                            </span>
+                            <span
+                              className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                                isActive ? 'bg-indigo-500 text-white' : 'bg-white text-indigo-600'
+                              }`}
+                            >
+                              {count}
+                            </span>
+                          </button>
+                          {!isDefaultFolder && (
+                            <button
+                              type="button"
+                              title={`移除「${folder}」清單夾`}
+                              onClick={() => handleDeleteCustomFolder(folder)}
+                              className={`px-1.5 py-1.5 rounded-r-xl text-[11px] font-bold transition-colors border-l ${
+                                isActive
+                                  ? 'bg-indigo-700 text-indigo-100 hover:bg-indigo-800 border-indigo-500'
+                                  : 'bg-indigo-50/80 text-indigo-400 hover:text-rose-600 hover:bg-rose-50 border-indigo-200/70 ring-1 ring-indigo-200/70'
+                              }`}
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {/* 搜尋欄 */}
                 <div className="mb-2.5">
                   <input
@@ -1519,8 +2205,10 @@ export default function App() {
                   {countryTabs.map(tab => {
                     const isActive = selectedCountryTab === tab;
                     const count = tab === '全部'
-                      ? filteredBySearch.length
-                      : filteredBySearch.filter(p => getCountryCityArea(p.addressComponents || []).country === tab).length;
+                      ? placesInCollectionView.length
+                      : placesInCollectionView.filter(
+                          p => getCountryCityArea(p.addressComponents || [], p.formattedAddress || '').country === tab
+                        ).length;
 
                     return (
                       <button
@@ -1584,6 +2272,14 @@ export default function App() {
                           {displayPlaces.length > 0 && displayPlaces.every(p => selectedDeleteIds.includes(p.id))
                             ? '取消全選'
                             : `全選顯示 (${displayPlaces.length})`}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={selectedDeleteIds.length === 0}
+                          onClick={() => setFolderPickerTarget('__batch__')}
+                          className="whitespace-nowrap px-3 py-2 text-sm font-bold text-indigo-700 bg-indigo-50 ring-1 ring-indigo-200 hover:bg-indigo-100 rounded-full transition-colors disabled:opacity-40"
+                        >
+                          📂 分類 ({selectedDeleteIds.length})
                         </button>
                         <button
                           type="button"
@@ -1779,8 +2475,18 @@ export default function App() {
             <div className="space-y-4 mt-2">
               {Object.keys(groupedByLocation).length === 0 ? (
                 <div className="text-center py-20 text-gray-400">
-                  <div className="text-4xl mb-4">🧳</div>
-                  <p>{savedPlaces.length === 0 ? '清單空空如也，快去搜尋想去的地點吧！' : '找不到符合的地點'}</p>
+                  <div className="text-4xl mb-4">
+                    {activeCollectionView === 'favorites' ? '🤍' : '🧳'}
+                  </div>
+                  <p>
+                    {savedPlaces.length === 0
+                      ? '清單空空如也，快去搜尋想去的地點吧！'
+                      : activeCollectionView === 'favorites'
+                        ? '目前「我的最愛」還沒有地點，點擊卡片上的 🤍 即可加入！'
+                        : activeCollectionView !== 'all'
+                          ? `目前「${activeCollectionView}」清單夾還沒有地點，點擊卡片上的「📂 分類」即可加入！`
+                          : '找不到符合的地點'}
+                  </p>
                   {savedPlaces.length === 0 && (
                     <button
                       type="button"
@@ -2064,36 +2770,78 @@ export default function App() {
                                                       </div>
                                                     </div>
 
-                                                    {((place.customTags && place.customTags.length > 0) || noteText) && (
-                                                      <div className="px-3 pb-2 -mt-1 space-y-1">
-                                                        {place.customTags && place.customTags.length > 0 && (
-                                                          <div className="flex gap-1 flex-wrap">
-                                                            {place.customTags.map((tag, idx) => (
-                                                              <button
-                                                                key={idx}
-                                                                type="button"
-                                                                onClick={(e) => {
-                                                                  e.stopPropagation();
-                                                                  setSelectedTag(prev => (prev === tag.trim() ? null : tag.trim()));
-                                                                }}
-                                                                className={`text-[10px] font-bold px-1.5 py-0.5 rounded transition-colors ${
-                                                                  selectedTag === tag.trim()
-                                                                    ? 'bg-blue-600 text-white'
-                                                                    : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                                                                }`}
-                                                              >
-                                                                #{tag}
-                                                              </button>
-                                                            ))}
-                                                          </div>
-                                                        )}
-                                                        {noteText && (
-                                                          <div className="text-xs text-amber-800 bg-amber-50/80 border border-amber-200/70 px-2 py-1 rounded-lg">
-                                                            📝 {noteText}
-                                                          </div>
-                                                        )}
+                                                    {/* ❤️ 我的最愛 + 📂 清單夾分類列 + 標籤 + 備註 */}
+                                                    <div className="px-3 pb-2 -mt-1 space-y-1.5">
+                                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                                        <button
+                                                          type="button"
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            toggleFavorite(place.id);
+                                                          }}
+                                                          className={`text-[11px] font-bold px-2 py-0.5 rounded-lg transition-colors flex items-center gap-1 ${
+                                                            place.isFavorite
+                                                              ? 'bg-rose-100 text-rose-700 ring-1 ring-rose-200'
+                                                              : 'bg-gray-100 text-gray-500 hover:bg-rose-50 hover:text-rose-600'
+                                                          }`}
+                                                        >
+                                                          <span>{place.isFavorite ? '❤️' : '🤍'}</span>
+                                                          <span>{place.isFavorite ? '最愛' : '收藏'}</span>
+                                                        </button>
+
+                                                        {(place.lists || []).map(folder => (
+                                                          <button
+                                                            key={folder}
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                              e.stopPropagation();
+                                                              setFolderPickerTarget(place.id);
+                                                            }}
+                                                            className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200/80 hover:bg-indigo-100 transition-colors"
+                                                          >
+                                                            {getFolderIcon(folder)} {folder}
+                                                          </button>
+                                                        ))}
+
+                                                        <button
+                                                          type="button"
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setFolderPickerTarget(place.id);
+                                                          }}
+                                                          className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors"
+                                                        >
+                                                          📂 {(place.lists || []).length > 0 ? '調整分類' : '加入清單夾'}
+                                                        </button>
                                                       </div>
-                                                    )}
+
+                                                      {place.customTags && place.customTags.length > 0 && (
+                                                        <div className="flex gap-1 flex-wrap">
+                                                          {place.customTags.map((tag, idx) => (
+                                                            <button
+                                                              key={idx}
+                                                              type="button"
+                                                              onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setSelectedTag(prev => (prev === tag.trim() ? null : tag.trim()));
+                                                              }}
+                                                              className={`text-[10px] font-bold px-1.5 py-0.5 rounded transition-colors ${
+                                                                selectedTag === tag.trim()
+                                                                  ? 'bg-blue-600 text-white'
+                                                                  : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                                              }`}
+                                                            >
+                                                              #{tag}
+                                                            </button>
+                                                          ))}
+                                                        </div>
+                                                      )}
+                                                      {noteText && (
+                                                        <div className="text-xs text-amber-800 bg-amber-50/80 border border-amber-200/70 px-2 py-1 rounded-lg">
+                                                          📝 {noteText}
+                                                        </div>
+                                                      )}
+                                                    </div>
 
                                                     {isExpanded && (
                                                       <div className="px-4 pb-4 pt-1 border-t border-gray-100 bg-gray-50/50">
@@ -2197,6 +2945,46 @@ export default function App() {
                 <input type="text" value={editForm.tags} onChange={e => setEditForm({...editForm, tags: e.target.value})} className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="例如：餐廳, 拉麵, 必去" />
               </div>
               <div>
+                <label className="block text-sm text-gray-600 mb-1.5 font-bold">📂 我的最愛與清單夾分類</label>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setEditForm(prev => ({ ...prev, isFavorite: !prev.isFavorite }))}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors border ${
+                      editForm.isFavorite
+                        ? 'bg-rose-500 text-white border-rose-500 shadow-xs'
+                        : 'bg-white text-gray-600 border-gray-300 hover:bg-rose-50'
+                    }`}
+                  >
+                    {editForm.isFavorite ? '❤️ 我的最愛' : '🤍 我的最愛'}
+                  </button>
+                  {customFolders.map(folder => {
+                    const isChecked = editForm.lists.includes(folder);
+                    return (
+                      <button
+                        key={folder}
+                        type="button"
+                        onClick={() =>
+                          setEditForm(prev => ({
+                            ...prev,
+                            lists: prev.lists.includes(folder)
+                              ? prev.lists.filter(f => f !== folder)
+                              : [...prev.lists, folder],
+                          }))
+                        }
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors border ${
+                          isChecked
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                            : 'bg-white text-gray-600 border-gray-300 hover:bg-indigo-50'
+                        }`}
+                      >
+                        {getFolderIcon(folder)} {folder}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
                 <label className="block text-sm text-gray-600 mb-1 font-bold">📝 旅遊備註</label>
                 <textarea
                   rows={2}
@@ -2212,6 +3000,150 @@ export default function App() {
               <button onClick={() => setEditingPlace(null)} className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200">取消</button>
               <button onClick={saveEdit} className="flex-1 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700">儲存變更</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* === 📂 快速指派清單夾與最愛彈窗 (單筆或批次選取) === */}
+      {folderPickerTarget && (
+        <div
+          className="fixed inset-0 bg-black/50 z-[110] flex items-center justify-center p-4"
+          onClick={() => setFolderPickerTarget(null)}
+        >
+          <div
+            className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl animate-in fade-in duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {(() => {
+              const isBatch = folderPickerTarget === '__batch__';
+              const singlePlace = isBatch ? null : savedPlaces.find(p => p.id === folderPickerTarget) || null;
+              const selectedSet = new Set(selectedDeleteIds);
+              const batchTargets = isBatch ? savedPlaces.filter(p => selectedSet.has(p.id)) : [];
+              const allBatchFav =
+                batchTargets.length > 0 && batchTargets.every(p => Boolean(p.isFavorite));
+
+              return (
+                <>
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <h2 className="text-lg font-extrabold text-gray-900 truncate">
+                      {isBatch
+                        ? `📂 批次分類 (${batchTargets.length} 個地點)`
+                        : `📂 ${singlePlace?.customName || singlePlace?.displayName?.text || '設定分類'}`}
+                    </h2>
+                    <button
+                      type="button"
+                      onClick={() => setFolderPickerTarget(null)}
+                      className="text-gray-400 hover:text-gray-600 font-bold text-lg px-1"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isBatch) {
+                          batchToggleFavoriteForSelected();
+                        } else if (singlePlace) {
+                          toggleFavorite(singlePlace.id);
+                        }
+                      }}
+                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-sm font-bold transition-colors ${
+                        (isBatch ? allBatchFav : singlePlace?.isFavorite)
+                          ? 'bg-rose-50 border-rose-300 text-rose-700'
+                          : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-rose-50/50'
+                      }`}
+                    >
+                      <span>{(isBatch ? allBatchFav : singlePlace?.isFavorite) ? '❤️ 我的最愛' : '🤍 加入我的最愛'}</span>
+                      <span className="text-xs">
+                        {(isBatch ? allBatchFav : singlePlace?.isFavorite) ? '✓ 已加入' : '點選加入'}
+                      </span>
+                    </button>
+
+                    {customFolders.map(folder => {
+                      const isInFolder = isBatch
+                        ? batchTargets.length > 0 && batchTargets.every(p => (p.lists || []).includes(folder))
+                        : Boolean(singlePlace && (singlePlace.lists || []).includes(folder));
+                      const partialInFolder =
+                        isBatch &&
+                        !isInFolder &&
+                        batchTargets.some(p => (p.lists || []).includes(folder));
+
+                      return (
+                        <button
+                          key={folder}
+                          type="button"
+                          onClick={() => {
+                            if (isBatch) {
+                              batchToggleFolderForSelected(folder);
+                            } else if (singlePlace) {
+                              togglePlaceInFolder(singlePlace.id, folder);
+                            }
+                          }}
+                          className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-sm font-bold transition-colors ${
+                            isInFolder
+                              ? 'bg-indigo-50 border-indigo-400 text-indigo-700'
+                              : partialInFolder
+                                ? 'bg-indigo-50/40 border-indigo-200 text-indigo-700'
+                                : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                          }`}
+                        >
+                          <span>
+                            {getFolderIcon(folder)} {folder}
+                          </span>
+                          <span className="text-xs">
+                            {isInFolder ? '✓ 已加入' : partialInFolder ? '部分已加入' : '＋ 加入'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const createdName = handleCreateCustomFolder(newFolderName);
+                      if (createdName) {
+                        if (isBatch) {
+                          const updated = savedPlaces.map(p =>
+                            selectedSet.has(p.id)
+                              ? { ...p, lists: Array.from(new Set([...(p.lists || []), createdName])) }
+                              : p
+                          );
+                          persistPlaces(updated);
+                        } else if (singlePlace) {
+                          togglePlaceInFolder(singlePlace.id, createdName);
+                        }
+                      }
+                    }}
+                    className="mt-3 pt-3 border-t border-gray-100 flex gap-1.5"
+                  >
+                    <input
+                      type="text"
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      placeholder="新增清單夾名稱..."
+                      className="flex-1 min-w-0 rounded-xl border border-gray-200 px-3 py-2 text-xs outline-none focus:border-indigo-500"
+                    />
+                    <button
+                      type="submit"
+                      className="shrink-0 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-2 transition-colors"
+                    >
+                      ＋ 建立並加入
+                    </button>
+                  </form>
+
+                  <button
+                    type="button"
+                    onClick={() => setFolderPickerTarget(null)}
+                    className="mt-4 w-full py-2.5 bg-gray-900 text-white rounded-xl text-sm font-bold hover:bg-gray-800 transition-colors"
+                  >
+                    完成
+                  </button>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}

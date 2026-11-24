@@ -6,6 +6,7 @@ import {
   classifyPlaceWithGemini,
   extractPlacesWithGemini,
   extractApiErrorDetails,
+  checkGeminiConnectionStatus,
 } from './server/geminiService.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,6 +17,12 @@ async function startServer() {
   const port = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: '15mb' }));
+
+  // Gemini API: 檢查連線狀態（在線 / 離線）
+  app.get('/api/gemini/status', async (_req, res) => {
+    const status = await checkGeminiConnectionStatus();
+    res.json(status);
+  });
 
   // Gemini API: 自動繁體中文城市 + 商圈分類與標籤建議
   app.post('/api/gemini/classify', async (req, res) => {
