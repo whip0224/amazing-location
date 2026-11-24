@@ -279,6 +279,7 @@ export default function App() {
   const [listSearchQuery, setListSearchQuery] = useState('');
   const [selectedCountryTab, setSelectedCountryTab] = useState<string>('全部');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [isTagCloudOpen, setIsTagCloudOpen] = useState(false);
   const [areaSortMap, setAreaSortMap] = useState<Record<string, 'default' | 'name' | 'rating' | 'distance'>>({});
   const [userCoords, setUserCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [expandedCards, setExpandedCards] = useState<string[]>([]);
@@ -2309,35 +2310,61 @@ export default function App() {
 
                   {detailTagCloudList.length > 0 && (
                     <div className="pt-2 border-t border-gray-100">
-                      <div className="text-xs font-bold text-gray-500 flex items-center gap-1 mb-2">
-                        <span>🏷️</span> 標籤雲快速篩選
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {detailTagCloudList.map(([tag, count]) => {
-                          const isTagSelected = selectedTag === tag;
-                          return (
-                            <button
-                              key={tag}
-                              type="button"
-                              onClick={() => setSelectedTag(prev => (prev === tag ? null : tag))}
-                              className={`px-2.5 py-1 rounded-full text-xs font-bold transition-all flex items-center gap-1 ${
-                                isTagSelected
-                                  ? 'bg-blue-600 text-white shadow-xs scale-[1.02]'
-                                  : 'bg-blue-50/80 text-blue-700 hover:bg-blue-100 ring-1 ring-blue-200/60'
-                              }`}
-                            >
-                              <span>#{tag}</span>
-                              <span
-                                className={`text-[10px] px-1.5 rounded-full ${
-                                  isTagSelected ? 'bg-blue-500 text-white' : 'bg-white/90 text-blue-600'
+                      <button
+                        type="button"
+                        onClick={() => setIsTagCloudOpen(prev => !prev)}
+                        aria-expanded={isTagCloudOpen}
+                        className="w-full flex items-center justify-between gap-2 py-0.5 text-left group"
+                      >
+                        <span className="text-xs font-bold text-gray-500 group-hover:text-gray-700 flex items-center gap-1.5 transition-colors">
+                          <span>🏷️</span>
+                          <span>標籤雲快速篩選</span>
+                          <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-gray-100 text-gray-500">
+                            {detailTagCloudList.length}
+                          </span>
+                          {selectedTag && !PRESET_CATEGORY_LABELS.includes(selectedTag) && (
+                            <span className="text-[10px] px-2 py-0.2 rounded-full bg-blue-600 text-white">
+                              #{selectedTag}
+                            </span>
+                          )}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold text-gray-400 group-hover:text-gray-600 transition-transform duration-200 ${
+                            isTagCloudOpen ? 'rotate-180' : ''
+                          }`}
+                        >
+                          ▼
+                        </span>
+                      </button>
+
+                      {isTagCloudOpen && (
+                        <div className="mt-2 flex flex-wrap gap-1.5 animate-in fade-in duration-150">
+                          {detailTagCloudList.map(([tag, count]) => {
+                            const isTagSelected = selectedTag === tag;
+                            return (
+                              <button
+                                key={tag}
+                                type="button"
+                                onClick={() => setSelectedTag(prev => (prev === tag ? null : tag))}
+                                className={`px-2.5 py-1 rounded-full text-xs font-bold transition-all flex items-center gap-1 ${
+                                  isTagSelected
+                                    ? 'bg-blue-600 text-white shadow-xs scale-[1.02]'
+                                    : 'bg-blue-50/80 text-blue-700 hover:bg-blue-100 ring-1 ring-blue-200/60'
                                 }`}
                               >
-                                {count}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                                <span>#{tag}</span>
+                                <span
+                                  className={`text-[10px] px-1.5 rounded-full ${
+                                    isTagSelected ? 'bg-blue-500 text-white' : 'bg-white/90 text-blue-600'
+                                  }`}
+                                >
+                                  {count}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
