@@ -289,7 +289,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/gemini/status', { cache: 'no-store' });
+      const res = await fetch('/api/gemini', { cache: 'no-store' });
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) {
         const reason = `後端端點未回傳 JSON (HTTP ${res.status})，請確認 Vercel 已重新部署或清除舊 PWA 快取`;
@@ -312,7 +312,7 @@ export default function App() {
       }
     } catch {
       setGeminiStatus('offline');
-      setGeminiStatusReason('無法連線至後端 /api/gemini/status');
+      setGeminiStatusReason('無法連線至後端 /api/gemini');
       if (showFeedback) showToast('🔴 Gemini 離線：無法連線至後端伺服器');
     }
   }, []);
@@ -329,7 +329,7 @@ export default function App() {
         return;
       }
       try {
-        const res = await fetch('/api/gemini/status', { cache: 'no-store' });
+        const res = await fetch('/api/gemini', { cache: 'no-store' });
         const contentType = res.headers.get('content-type') || '';
         if (!contentType.includes('application/json')) {
           if (active) {
@@ -350,7 +350,7 @@ export default function App() {
       } catch {
         if (active) {
           setGeminiStatus('offline');
-          setGeminiStatusReason('無法連線至後端 /api/gemini/status');
+          setGeminiStatusReason('無法連線至後端 /api/gemini');
         }
       }
     };
@@ -517,10 +517,11 @@ export default function App() {
     place: GooglePlace
   ): Promise<{ city: string; area: string; tags: string[]; usedGemini: boolean; errorMessage?: string }> => {
     try {
-      const response = await fetch('/api/gemini/classify', {
+      const response = await fetch('/api/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          action: 'classify',
           name: place.customName || place.displayName?.text || '',
           address: place.formattedAddress || '',
           addressComponents: place.addressComponents || [],
@@ -960,10 +961,11 @@ export default function App() {
     setExtractedItems([]);
 
     try {
-      const geminiRes = await fetch('/api/gemini/extract', {
+      const geminiRes = await fetch('/api/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          action: 'extract',
           text: extractText.trim(),
           imageBase64: extractImageData?.base64,
           mimeType: extractImageData?.mimeType,

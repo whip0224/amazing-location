@@ -18,6 +18,28 @@ async function startServer() {
 
   app.use(express.json({ limit: '15mb' }));
 
+  // 統一 Gemini API 入口：GET 狀態檢測 / POST 分類或擷取（與 Vercel /api/gemini.ts 一致）
+  app.get('/api/gemini', async (_req, res) => {
+    const status = await checkGeminiConnectionStatus();
+    res.json({ ...status, configured: status.reason !== '尚未設定 GEMINI_API_KEY' });
+  });
+
+  app.post('/api/gemini', async (req, res) => {
+    try {
+      if (req.body?.action === 'extract') {
+        const places = await extractPlacesWithGemini(req.body || {});
+        res.json({ places });
+        return;
+      }
+      const result = await classifyPlaceWithGemini(req.body || {});
+      res.json(result);
+    } catch (error) {
+      const { status, message } = extractApiErrorDetails(error);
+      console.error('[Gemini Unified Error]', error);
+      res.status(status).json({ error: message });
+    }
+  });
+
   // Gemini API: 檢查連線狀態（在線 / 離線）
   app.get('/api/gemini/status', async (_req, res) => {
     const status = await checkGeminiConnectionStatus();

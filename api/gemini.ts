@@ -1,10 +1,19 @@
-// 零外部依賴單檔 Vercel Serverless Function：直接以原生 fetch 呼叫 Gemini v1beta REST API
+// 零外部依賴單檔 Vercel Serverless Function：統一處理 /api/gemini（GET 連線狀態 / POST 分類與擷取）
+interface AddressComponent {
+  longText: string;
+  types?: string[];
+}
+
 interface VercelRequest {
   method?: string;
   body?: {
+    action?: 'classify' | 'extract';
     name?: string;
     address?: string;
-    addressComponents?: { longText: string; types?: string[] }[];
+    addressComponents?: AddressComponent[];
+    text?: string;
+    imageBase64?: string;
+    mimeType?: string;
   };
 }
 
@@ -18,10 +27,7 @@ const TAIWAN_CITY_REGEX =
   /(臺北市|台北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|屏東縣|宜蘭縣|花蓮縣|臺東縣|台東縣|澎湖縣|金門縣|連江縣)/;
 const TAIWAN_VILLAGE_SUFFIX_REGEX = /[里村鄰]$/;
 
-function isTaiwanPlace(
-  address?: string,
-  addressComponents?: { longText: string; types?: string[] }[]
-): boolean {
+function isTaiwanPlace(address?: string, addressComponents?: AddressComponent[]): boolean {
   const safeComponents = Array.isArray(addressComponents) ? addressComponents : [];
   const country = safeComponents.find(c => c.types?.includes('country'))?.longText || '';
   if (country.includes('台灣') || country.includes('臺灣') || country.toLowerCase() === 'taiwan') {
@@ -33,7 +39,7 @@ function isTaiwanPlace(
 
 function extractTaiwanAdminFromInput(
   address?: string,
-  addressComponents?: { longText: string; types?: string[] }[]
+  addressComponents?: AddressComponent[]
 ): { city: string; district: string } {
   const safeComponents = Array.isArray(addressComponents) ? addressComponents : [];
   let city: string;
@@ -128,7 +134,7 @@ async function callGeminiV1Beta(apiKey: string, payload: Record<string, unknown>
               'x-goog-api-key': apiKey,
             },
             body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(9000),
+            signal: AbortSignal.timeout(9500),
           }
         );
 
@@ -139,7 +145,7 @@ async function callGeminiV1Beta(apiKey: string, payload: Record<string, unknown>
 
         if (res.ok) {
           const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-          return { ok: true as const, text };
+          return { ok: true as const, text, model };
         }
 
         lastStatus = res.status;
@@ -150,7 +156,7 @@ async function callGeminiV1Beta(apiKey: string, payload: Record<string, unknown>
         }
 
         if (res.status === 404) {
-          break; // 換下一個可用模型
+          break;
         }
 
         if ((res.status === 429 || res.status === 503) && attempt === 0) {
@@ -172,20 +178,59 @@ async function callGeminiV1Beta(apiKey: string, payload: Record<string, unknown>
   return { ok: false as const, status: lastStatus, message: lastMessage };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  res.setHeader?.('Cache-Control', 'no-store');
-
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method Not Allowed' });
-    return;
-  }
-
+async function handleStatus(res: VercelResponse) {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
-    res.status(500).json({ error: '尚未設定 GEMINI_API_KEY，請於 Vercel 環境變數中設定。' });
+    res.status(200).json({
+      online: false,
+      configured: false,
+      reason: '尚未設定 GEMINI_API_KEY（請於 Vercel Environment Variables 設定後 Redeploy）',
+    });
     return;
   }
 
+  try {
+    const upstream = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=5', {
+      method: 'GET',
+      headers: {
+        'x-goog-api-key': apiKey,
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+
+    const data = (await upstream.json().catch(() => ({}))) as {
+      error?: { message?: string };
+    };
+
+    if (upstream.ok) {
+      res.status(200).json({
+        online: true,
+        configured: true,
+        endpoint: 'v1beta',
+      });
+      return;
+    }
+
+    const upstreamMsg = data?.error?.message || `HTTP ${upstream.status}`;
+    res.status(200).json({
+      online: false,
+      configured: true,
+      status: upstream.status,
+      reason:
+        upstream.status === 400 || upstream.status === 401 || upstream.status === 403
+          ? `API 金鑰驗證失敗 (${upstream.status})：請確認 Google Cloud 金鑰「應用程式限制」設為「無」且已啟用 Generative Language API`
+          : upstreamMsg,
+    });
+  } catch (error) {
+    res.status(200).json({
+      online: false,
+      configured: true,
+      reason: error instanceof Error ? error.message : '無法連線至 Gemini v1beta 服務',
+    });
+  }
+}
+
+async function handleClassify(req: VercelRequest, res: VercelResponse, apiKey: string) {
   const input = req.body || {};
   const isTaiwan = isTaiwanPlace(input.address, input.addressComponents);
   const taiwanAdmin = isTaiwan ? extractTaiwanAdminFromInput(input.address, input.addressComponents) : null;
@@ -263,4 +308,142 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch {
     res.status(502).json({ error: 'Gemini 回傳 JSON 解析失敗' });
   }
+}
+
+async function handleExtract(req: VercelRequest, res: VercelResponse, apiKey: string) {
+  const input = req.body || {};
+  const trimmedText = (input.text || '').trim();
+  const hasImage = Boolean(input.imageBase64 && input.mimeType);
+
+  if (!trimmedText && !hasImage) {
+    res.status(400).json({ error: '請貼上旅遊文字或上傳截圖。' });
+    return;
+  }
+
+  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+
+  if (hasImage && input.imageBase64 && input.mimeType) {
+    parts.push({
+      inlineData: {
+        mimeType: input.mimeType,
+        data: input.imageBase64,
+      },
+    });
+  }
+
+  parts.push({
+    text: trimmedText
+      ? `請從以下內容（與附圖，若有）中擷取所有提到的餐廳、咖啡廳、商店或景點：\n\n${trimmedText}`
+      : '請辨識並擷取這張圖片／截圖中提到的所有餐廳、咖啡廳、商店或旅遊景點。',
+  });
+
+  const systemPrompt =
+    '你是旅遊清單擷取助手。請從使用者貼上的遊記、IG／Threads 貼文、備忘錄文字或截圖中，精準抓出所有明確提到的餐廳、美食店家、商店、咖啡廳或旅遊景點（排除純行政地名如「日本」「大阪市」本身，除非它是具體景點如「大阪城」）。' +
+    '針對每個地點輸出：' +
+    '- name：店家或景點名稱。' +
+    '- searchQuery：最適合拿去 Google Maps Places API 搜尋的精準關鍵字（若上下文有提到城市或商圈，請一併加上，例如「大阪 難波 燒肉力丸」或「台北 大同區 三多屋爸爸嘴」）。' +
+    '- hintCity：推測城市（繁體中文，台灣地點填縣市名如臺北市、臺中市；若無法判斷則填空字串）。' +
+    '- hintArea：推測商圈或行政區（繁體中文，台灣地點請填區／鄉／鎮／市如大同區、信義區或知名商圈，絕不可填里／村／鄰；若無法判斷則填空字串）。' +
+    '- tags：1 到 3 個繁體中文標籤（不含 # 符號）。' +
+    '- note：從內容中擷取的實用備註（例如必吃餐點、公休日、預約提醒、營業時間提示，若無則填空字串）。';
+
+  const result = await callGeminiV1Beta(apiKey, {
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: 'user', parts }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'OBJECT',
+        properties: {
+          places: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                name: { type: 'STRING' },
+                searchQuery: { type: 'STRING' },
+                hintCity: { type: 'STRING' },
+                hintArea: { type: 'STRING' },
+                tags: {
+                  type: 'ARRAY',
+                  items: { type: 'STRING' },
+                },
+                note: { type: 'STRING' },
+              },
+              required: ['name', 'searchQuery', 'hintCity', 'hintArea', 'tags', 'note'],
+            },
+          },
+        },
+        required: ['places'],
+      },
+    },
+  });
+
+  if (!result.ok) {
+    res.status(result.status).json({ error: result.message });
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(stripJsonFence(result.text)) as {
+      places?: Array<{
+        name?: string;
+        searchQuery?: string;
+        hintCity?: string;
+        hintArea?: string;
+        tags?: string[];
+        note?: string;
+      }>;
+    };
+
+    const places = Array.isArray(parsed.places)
+      ? parsed.places
+          .filter(p => p && typeof p.name === 'string' && p.name.trim().length > 0)
+          .map(p => {
+            const rawHintArea = (p.hintArea || '').trim();
+            return {
+              name: p.name!.trim(),
+              searchQuery: (p.searchQuery || p.name!).trim(),
+              hintCity: (p.hintCity || '').trim(),
+              hintArea: TAIWAN_VILLAGE_SUFFIX_REGEX.test(rawHintArea) ? '' : rawHintArea,
+              tags: Array.isArray(p.tags)
+                ? p.tags.map(t => String(t).replace(/^#/, '').trim()).filter(Boolean).slice(0, 4)
+                : [],
+              note: (p.note || '').trim(),
+            };
+          })
+      : [];
+
+    res.status(200).json({ places });
+  } catch {
+    res.status(502).json({ error: 'Gemini 回傳 JSON 解析失敗' });
+  }
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
+
+  if (req.method === 'GET') {
+    await handleStatus(res);
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method Not Allowed' });
+    return;
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    res.status(500).json({ error: '尚未設定 GEMINI_API_KEY，請於 Vercel 環境變數中設定。' });
+    return;
+  }
+
+  const action = req.body?.action;
+  if (action === 'extract') {
+    await handleExtract(req, res, apiKey);
+    return;
+  }
+
+  await handleClassify(req, res, apiKey);
 }
