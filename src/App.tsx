@@ -290,6 +290,15 @@ export default function App() {
 
     try {
       const res = await fetch('/api/gemini/status', { cache: 'no-store' });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const reason = `後端端點未回傳 JSON (HTTP ${res.status})，請確認 Vercel 已重新部署或清除舊 PWA 快取`;
+        setGeminiStatus('offline');
+        setGeminiStatusReason(reason);
+        if (showFeedback) showToast(`🔴 Gemini 離線：${reason}`);
+        return;
+      }
+
       const data = await res.json();
       if (res.ok && data?.online) {
         setGeminiStatus('online');
@@ -303,7 +312,7 @@ export default function App() {
       }
     } catch {
       setGeminiStatus('offline');
-      setGeminiStatusReason('無法連線至後端伺服器');
+      setGeminiStatusReason('無法連線至後端 /api/gemini/status');
       if (showFeedback) showToast('🔴 Gemini 離線：無法連線至後端伺服器');
     }
   }, []);
@@ -321,6 +330,14 @@ export default function App() {
       }
       try {
         const res = await fetch('/api/gemini/status', { cache: 'no-store' });
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          if (active) {
+            setGeminiStatus('offline');
+            setGeminiStatusReason(`後端端點未回傳 JSON (HTTP ${res.status})，請確認 Vercel 已重新部署或清除舊快取`);
+          }
+          return;
+        }
         const data = await res.json();
         if (!active) return;
         if (res.ok && data?.online) {
@@ -333,7 +350,7 @@ export default function App() {
       } catch {
         if (active) {
           setGeminiStatus('offline');
-          setGeminiStatusReason('無法連線至後端伺服器');
+          setGeminiStatusReason('無法連線至後端 /api/gemini/status');
         }
       }
     };
@@ -867,7 +884,7 @@ export default function App() {
     }
   };
 
-  // ✨ 處理截圖上傳或貼上剪貼簿圖片
+  // ✨ 處理截圖上傳或貼上剪貼簿圖片（自動壓縮長邊至 1200px / JPEG 0.8，避開 Vercel 4.5MB 限制）
   const handleExtractImageFile = (file: File) => {
     if (!file.type.startsWith('image/')) {
       setExtractError('請選擇圖片格式的截圖檔案（PNG / JPG / WebP）。');
@@ -875,13 +892,41 @@ export default function App() {
     }
     const reader = new FileReader();
     reader.onload = () => {
-      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
-      const commaIdx = dataUrl.indexOf(',');
-      if (commaIdx === -1) return;
-      const base64 = dataUrl.slice(commaIdx + 1);
-      setExtractImagePreview(dataUrl);
-      setExtractImageData({ base64, mimeType: file.type || 'image/png' });
-      setExtractError(null);
+      const rawDataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!rawDataUrl) return;
+
+      const applyImageDataUrl = (dataUrl: string, mimeType: string) => {
+        const commaIdx = dataUrl.indexOf(',');
+        if (commaIdx === -1) return;
+        const base64 = dataUrl.slice(commaIdx + 1);
+        setExtractImagePreview(dataUrl);
+        setExtractImageData({ base64, mimeType });
+        setExtractError(null);
+      };
+
+      const img = new Image();
+      img.onload = () => {
+        const maxSide = 1200;
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const targetWidth = Math.max(1, Math.round(img.width * scale));
+        const targetHeight = Math.max(1, Math.round(img.height * scale));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          applyImageDataUrl(rawDataUrl, file.type || 'image/png');
+          return;
+        }
+        ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+        const compressedUrl = canvas.toDataURL('image/jpeg', 0.8);
+        applyImageDataUrl(compressedUrl, 'image/jpeg');
+      };
+      img.onerror = () => {
+        applyImageDataUrl(rawDataUrl, file.type || 'image/png');
+      };
+      img.src = rawDataUrl;
     };
     reader.readAsDataURL(file);
   };

@@ -176,6 +176,48 @@ function extractTaiwanAdminFromInput(
   return { city, district };
 }
 
+function stripJsonFence(text: string): string {
+  return text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+}
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function generateWithRetryAndFallback(
+  ai: GoogleGenAI,
+  buildParams: (model: string) => Parameters<GoogleGenAI['models']['generateContent']>[0]
+) {
+  const models = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const;
+  let lastError: unknown;
+
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await ai.models.generateContent(buildParams(model));
+      } catch (error) {
+        lastError = error;
+        const { status } = extractApiErrorDetails(error);
+        if (status === 400 || status === 401 || status === 403) {
+          throw error;
+        }
+        if (status === 404) {
+          break;
+        }
+        if ((status === 429 || status === 503) && attempt === 0) {
+          await sleep(600);
+          continue;
+        }
+        break;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 export async function classifyPlaceWithGemini(input: ClassifyPlaceInput): Promise<ClassifyPlaceResult> {
   const ai = getGeminiClient();
   const isTaiwan = isTaiwanPlace(input.address, input.addressComponents);
@@ -194,11 +236,11 @@ export async function classifyPlaceWithGemini(input: ClassifyPlaceInput): Promis
     .filter(Boolean)
     .join('\n');
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+  const response = await generateWithRetryAndFallback(ai, model => ({
+    model,
     contents: prompt,
     config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      ...(model.includes('lite') ? {} : { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }),
       systemInstruction:
         '你是專精台灣、日本、韓國與全球旅遊的繁體中文（台灣／香港用語）旅遊資料整理專家。' +
         '任務：1. 將地址精準轉換為簡潔好辨識的城市名（city，例如：臺北市、新北市、臺中市、高雄市、大阪、東京、京都、福岡、首爾、釜山）與商圈或行政區名（area，例如：大同區、信義區、西門町、難波／心齋橋、梅田、道頓堀、澀谷、新宿、表參道、祇園／河原町、弘大、聖水洞；若為日本行政區請寫繁體中文區名或知名商圈，不要保留英文如 Chuo Ward）。' +
@@ -226,9 +268,9 @@ export async function classifyPlaceWithGemini(input: ClassifyPlaceInput): Promis
         required: ['city', 'area', 'tags'],
       },
     },
-  });
+  }));
 
-  const jsonStr = (response.text ?? '{}').trim();
+  const jsonStr = stripJsonFence(response.text ?? '{}') || '{}';
   const parsed = JSON.parse(jsonStr) as Partial<ClassifyPlaceResult>;
 
   let finalCity = (parsed.city || '').trim();
@@ -285,11 +327,11 @@ export async function extractPlacesWithGemini(input: ExtractPlacesInput): Promis
       : '請辨識並擷取這張圖片／截圖中提到的所有餐廳、咖啡廳、商店或旅遊景點。',
   });
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+  const response = await generateWithRetryAndFallback(ai, model => ({
+    model,
     contents: { parts },
     config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      ...(model.includes('lite') ? {} : { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }),
       systemInstruction:
         '你是旅遊清單擷取助手。請從使用者貼上的遊記、IG／Threads 貼文、備忘錄文字或截圖中，精準抓出所有明確提到的餐廳、美食店家、商店、咖啡廳或旅遊景點（排除純行政地名如「日本」「大阪市」本身，除非它是具體景點如「大阪城」）。' +
         '針對每個地點輸出：' +
@@ -326,9 +368,9 @@ export async function extractPlacesWithGemini(input: ExtractPlacesInput): Promis
         required: ['places'],
       },
     },
-  });
+  }));
 
-  const jsonStr = (response.text ?? '{"places":[]}').trim();
+  const jsonStr = stripJsonFence(response.text ?? '{"places":[]}') || '{"places":[]}';
   const parsed = JSON.parse(jsonStr) as { places?: ExtractedPlaceCandidate[] };
 
   if (!Array.isArray(parsed.places)) return [];
