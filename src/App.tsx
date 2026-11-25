@@ -33,6 +33,156 @@ const FOLDER_ICON_MAP: Record<string, string> = {
 
 const getFolderIcon = (folder: string) => FOLDER_ICON_MAP[folder] || '📁';
 
+const FOLDER_COLOR_OPTIONS = [
+  {
+    id: 'indigo',
+    label: '靛藍',
+    dot: 'bg-indigo-500',
+    swatchRing: 'ring-indigo-500',
+    tabActive: 'bg-indigo-600 text-white shadow-xs',
+    tabInactive: 'bg-indigo-50/80 text-indigo-700 hover:bg-indigo-100 ring-1 ring-indigo-200/70',
+    tabBadgeActive: 'bg-indigo-500 text-white',
+    tabBadgeInactive: 'bg-white text-indigo-600',
+    tabCloseActive: 'bg-indigo-700 text-indigo-100 hover:bg-indigo-800 border-indigo-500',
+    tabCloseInactive: 'bg-indigo-50/80 text-indigo-400 hover:text-rose-600 hover:bg-rose-50 border-indigo-200/70 ring-1 ring-indigo-200/70',
+    badge: 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200/80 hover:bg-indigo-100',
+    chipSelected: 'bg-indigo-600 text-white border-indigo-600 shadow-xs',
+    chipUnselected: 'bg-white text-gray-600 border-gray-200 hover:bg-indigo-50',
+    pickerSelected: 'bg-indigo-50 border-indigo-400 text-indigo-700',
+    pickerPartial: 'bg-indigo-50/40 border-indigo-200 text-indigo-700',
+  },
+  {
+    id: 'amber',
+    label: '琥珀',
+    dot: 'bg-amber-500',
+    swatchRing: 'ring-amber-500',
+    tabActive: 'bg-amber-500 text-white shadow-xs',
+    tabInactive: 'bg-amber-50/80 text-amber-800 hover:bg-amber-100 ring-1 ring-amber-200/80',
+    tabBadgeActive: 'bg-amber-400 text-white',
+    tabBadgeInactive: 'bg-white text-amber-700',
+    tabCloseActive: 'bg-amber-600 text-amber-100 hover:bg-amber-700 border-amber-400',
+    tabCloseInactive: 'bg-amber-50/80 text-amber-400 hover:text-rose-600 hover:bg-rose-50 border-amber-200/80 ring-1 ring-amber-200/80',
+    badge: 'bg-amber-50 text-amber-800 ring-1 ring-amber-200/80 hover:bg-amber-100',
+    chipSelected: 'bg-amber-500 text-white border-amber-500 shadow-xs',
+    chipUnselected: 'bg-white text-gray-600 border-gray-200 hover:bg-amber-50',
+    pickerSelected: 'bg-amber-50 border-amber-400 text-amber-800',
+    pickerPartial: 'bg-amber-50/40 border-amber-200 text-amber-800',
+  },
+  {
+    id: 'emerald',
+    label: '翠綠',
+    dot: 'bg-emerald-500',
+    swatchRing: 'ring-emerald-500',
+    tabActive: 'bg-emerald-600 text-white shadow-xs',
+    tabInactive: 'bg-emerald-50/80 text-emerald-700 hover:bg-emerald-100 ring-1 ring-emerald-200/70',
+    tabBadgeActive: 'bg-emerald-500 text-white',
+    tabBadgeInactive: 'bg-white text-emerald-600',
+    tabCloseActive: 'bg-emerald-700 text-emerald-100 hover:bg-emerald-800 border-emerald-500',
+    tabCloseInactive: 'bg-emerald-50/80 text-emerald-400 hover:text-rose-600 hover:bg-rose-50 border-emerald-200/70 ring-1 ring-emerald-200/70',
+    badge: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/80 hover:bg-emerald-100',
+    chipSelected: 'bg-emerald-600 text-white border-emerald-600 shadow-xs',
+    chipUnselected: 'bg-white text-gray-600 border-gray-200 hover:bg-emerald-50',
+    pickerSelected: 'bg-emerald-50 border-emerald-400 text-emerald-700',
+    pickerPartial: 'bg-emerald-50/40 border-emerald-200 text-emerald-700',
+  },
+  {
+    id: 'sky',
+    label: '天藍',
+    dot: 'bg-sky-500',
+    swatchRing: 'ring-sky-500',
+    tabActive: 'bg-sky-600 text-white shadow-xs',
+    tabInactive: 'bg-sky-50/80 text-sky-700 hover:bg-sky-100 ring-1 ring-sky-200/70',
+    tabBadgeActive: 'bg-sky-500 text-white',
+    tabBadgeInactive: 'bg-white text-sky-600',
+    tabCloseActive: 'bg-sky-700 text-sky-100 hover:bg-sky-800 border-sky-500',
+    tabCloseInactive: 'bg-sky-50/80 text-sky-400 hover:text-rose-600 hover:bg-rose-50 border-sky-200/70 ring-1 ring-sky-200/70',
+    badge: 'bg-sky-50 text-sky-700 ring-1 ring-sky-200/80 hover:bg-sky-100',
+    chipSelected: 'bg-sky-600 text-white border-sky-600 shadow-xs',
+    chipUnselected: 'bg-white text-gray-600 border-gray-200 hover:bg-sky-50',
+    pickerSelected: 'bg-sky-50 border-sky-400 text-sky-700',
+    pickerPartial: 'bg-sky-50/40 border-sky-200 text-sky-700',
+  },
+  {
+    id: 'rose',
+    label: '莓紅',
+    dot: 'bg-rose-500',
+    swatchRing: 'ring-rose-500',
+    tabActive: 'bg-rose-600 text-white shadow-xs',
+    tabInactive: 'bg-rose-50/80 text-rose-700 hover:bg-rose-100 ring-1 ring-rose-200/70',
+    tabBadgeActive: 'bg-rose-500 text-white',
+    tabBadgeInactive: 'bg-white text-rose-600',
+    tabCloseActive: 'bg-rose-700 text-rose-100 hover:bg-rose-800 border-rose-500',
+    tabCloseInactive: 'bg-rose-50/80 text-rose-400 hover:text-rose-600 hover:bg-rose-50 border-rose-200/70 ring-1 ring-rose-200/70',
+    badge: 'bg-rose-50 text-rose-700 ring-1 ring-rose-200/80 hover:bg-rose-100',
+    chipSelected: 'bg-rose-600 text-white border-rose-600 shadow-xs',
+    chipUnselected: 'bg-white text-gray-600 border-gray-200 hover:bg-rose-50',
+    pickerSelected: 'bg-rose-50 border-rose-400 text-rose-700',
+    pickerPartial: 'bg-rose-50/40 border-rose-200 text-rose-700',
+  },
+  {
+    id: 'violet',
+    label: '紫羅蘭',
+    dot: 'bg-violet-500',
+    swatchRing: 'ring-violet-500',
+    tabActive: 'bg-violet-600 text-white shadow-xs',
+    tabInactive: 'bg-violet-50/80 text-violet-700 hover:bg-violet-100 ring-1 ring-violet-200/70',
+    tabBadgeActive: 'bg-violet-500 text-white',
+    tabBadgeInactive: 'bg-white text-violet-600',
+    tabCloseActive: 'bg-violet-700 text-violet-100 hover:bg-violet-800 border-violet-500',
+    tabCloseInactive: 'bg-violet-50/80 text-violet-400 hover:text-rose-600 hover:bg-rose-50 border-violet-200/70 ring-1 ring-violet-200/70',
+    badge: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200/80 hover:bg-violet-100',
+    chipSelected: 'bg-violet-600 text-white border-violet-600 shadow-xs',
+    chipUnselected: 'bg-white text-gray-600 border-gray-200 hover:bg-violet-50',
+    pickerSelected: 'bg-violet-50 border-violet-400 text-violet-700',
+    pickerPartial: 'bg-violet-50/40 border-violet-200 text-violet-700',
+  },
+  {
+    id: 'teal',
+    label: '青綠',
+    dot: 'bg-teal-500',
+    swatchRing: 'ring-teal-500',
+    tabActive: 'bg-teal-600 text-white shadow-xs',
+    tabInactive: 'bg-teal-50/80 text-teal-700 hover:bg-teal-100 ring-1 ring-teal-200/70',
+    tabBadgeActive: 'bg-teal-500 text-white',
+    tabBadgeInactive: 'bg-white text-teal-600',
+    tabCloseActive: 'bg-teal-700 text-teal-100 hover:bg-teal-800 border-teal-500',
+    tabCloseInactive: 'bg-teal-50/80 text-teal-400 hover:text-rose-600 hover:bg-rose-50 border-teal-200/70 ring-1 ring-teal-200/70',
+    badge: 'bg-teal-50 text-teal-700 ring-1 ring-teal-200/80 hover:bg-teal-100',
+    chipSelected: 'bg-teal-600 text-white border-teal-600 shadow-xs',
+    chipUnselected: 'bg-white text-gray-600 border-gray-200 hover:bg-teal-50',
+    pickerSelected: 'bg-teal-50 border-teal-400 text-teal-700',
+    pickerPartial: 'bg-teal-50/40 border-teal-200 text-teal-700',
+  },
+  {
+    id: 'orange',
+    label: '橘紅',
+    dot: 'bg-orange-500',
+    swatchRing: 'ring-orange-500',
+    tabActive: 'bg-orange-500 text-white shadow-xs',
+    tabInactive: 'bg-orange-50/80 text-orange-700 hover:bg-orange-100 ring-1 ring-orange-200/70',
+    tabBadgeActive: 'bg-orange-400 text-white',
+    tabBadgeInactive: 'bg-white text-orange-600',
+    tabCloseActive: 'bg-orange-600 text-orange-100 hover:bg-orange-700 border-orange-400',
+    tabCloseInactive: 'bg-orange-50/80 text-orange-400 hover:text-rose-600 hover:bg-rose-50 border-orange-200/70 ring-1 ring-orange-200/70',
+    badge: 'bg-orange-50 text-orange-700 ring-1 ring-orange-200/80 hover:bg-orange-100',
+    chipSelected: 'bg-orange-500 text-white border-orange-500 shadow-xs',
+    chipUnselected: 'bg-white text-gray-600 border-gray-200 hover:bg-orange-50',
+    pickerSelected: 'bg-orange-50 border-orange-400 text-orange-700',
+    pickerPartial: 'bg-orange-50/40 border-orange-200 text-orange-700',
+  },
+] as const;
+
+type FolderColorId = (typeof FOLDER_COLOR_OPTIONS)[number]['id'];
+
+const DEFAULT_FOLDER_COLOR_MAP: Record<string, FolderColorId> = {
+  待去: 'amber',
+  已去: 'emerald',
+  行程規劃: 'indigo',
+};
+
+const getFolderColorOption = (colorId?: string) =>
+  FOLDER_COLOR_OPTIONS.find(c => c.id === colorId) || FOLDER_COLOR_OPTIONS[0];
+
 const PRESET_CATEGORY_TAGS = [
   { label: '飲食', icon: '🍽️' },
   { label: '景點', icon: '🏛️' },
@@ -268,9 +418,23 @@ export default function App() {
       return [...DEFAULT_CUSTOM_FOLDERS];
     }
   });
+  const [folderColors, setFolderColors] = useState<Record<string, FolderColorId>>(() => {
+    try {
+      const raw = localStorage.getItem('amazing_folder_colors');
+      const parsed = raw ? JSON.parse(raw) : {};
+      return {
+        ...DEFAULT_FOLDER_COLOR_MAP,
+        ...(parsed && typeof parsed === 'object' ? parsed : {}),
+      };
+    } catch {
+      return { ...DEFAULT_FOLDER_COLOR_MAP };
+    }
+  });
   const [activeCollectionView, setActiveCollectionView] = useState<string>('all');
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderColor, setNewFolderColor] = useState<FolderColorId>('sky');
+  const [showFolderSettingsModal, setShowFolderSettingsModal] = useState(false);
   const [folderPickerTarget, setFolderPickerTarget] = useState<string | null>(null);
   const [saveIsFavorite, setSaveIsFavorite] = useState(false);
   const [saveFolderSelection, setSaveFolderSelection] = useState<string[]>([]);
@@ -410,6 +574,19 @@ export default function App() {
     const merged = Array.from(new Set([...DEFAULT_CUSTOM_FOLDERS, ...updatedFolders])).filter(Boolean);
     setCustomFolders(merged);
     localStorage.setItem('amazing_custom_folders', JSON.stringify(merged));
+  };
+
+  const persistFolderColors = (nextColors: Record<string, FolderColorId>) => {
+    setFolderColors(nextColors);
+    localStorage.setItem('amazing_folder_colors', JSON.stringify(nextColors));
+  };
+
+  const getFolderColor = (folderName: string) =>
+    getFolderColorOption(folderColors[folderName] || DEFAULT_FOLDER_COLOR_MAP[folderName] || 'indigo');
+
+  const updateFolderColor = (folderName: string, colorId: FolderColorId) => {
+    const nextColors = { ...folderColors, [folderName]: colorId };
+    persistFolderColors(nextColors);
   };
 
   // 📝 紀錄三層分類的折疊狀態
@@ -1193,7 +1370,7 @@ export default function App() {
   };
 
   // ➕ 新增自訂清單夾
-  const handleCreateCustomFolder = (rawName?: string): string | null => {
+  const handleCreateCustomFolder = (rawName?: string, colorOverride?: FolderColorId): string | null => {
     const trimmed = (rawName ?? newFolderName).trim();
     if (!trimmed) {
       showToast('⚠️ 請輸入清單夾名稱');
@@ -1212,6 +1389,8 @@ export default function App() {
 
     const nextFolders = [...customFolders, trimmed];
     persistFolders(nextFolders);
+    const chosenColor = colorOverride || newFolderColor;
+    persistFolderColors({ ...folderColors, [trimmed]: chosenColor });
     setNewFolderName('');
     setShowNewFolderInput(false);
     showToast(`📁 已新增清單夾「${trimmed}」`);
@@ -1223,6 +1402,11 @@ export default function App() {
     if ((DEFAULT_CUSTOM_FOLDERS as readonly string[]).includes(folderName)) return;
     const nextFolders = customFolders.filter(f => f !== folderName);
     persistFolders(nextFolders);
+    if (folderColors[folderName]) {
+      const nextColors = { ...folderColors };
+      delete nextColors[folderName];
+      persistFolderColors(nextColors);
+    }
     const updatedPlaces = savedPlaces.map(p => ({
       ...p,
       lists: Array.isArray(p.lists) ? p.lists.filter(f => f !== folderName) : [],
@@ -1836,7 +2020,7 @@ export default function App() {
                         value={saveTagsInput}
                         onChange={(e) => setSaveTagsInput(e.target.value)}
                         placeholder="例如：飲食, 拉麵, 必吃（儲存時將與 AI 標籤合併）"
-                        className="w-full rounded-xl border border-gray-200 bg-gray-50/70 px-3 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
+                        className="w-full rounded-xl border border-gray-200 bg-gray-50/70 px-3 py-2 text-base sm:text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
                       />
                       <div className="mt-2 flex items-center flex-wrap gap-1.5">
                         <span className="text-[11px] font-bold text-gray-400">大分類：</span>
@@ -1876,6 +2060,7 @@ export default function App() {
                         </button>
                         {customFolders.map(folder => {
                           const isChosen = saveFolderSelection.includes(folder);
+                          const colorStyle = getFolderColor(folder);
                           return (
                             <button
                               key={folder}
@@ -1885,13 +2070,18 @@ export default function App() {
                                   prev.includes(folder) ? prev.filter(f => f !== folder) : [...prev, folder]
                                 )
                               }
-                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors border ${
-                                isChosen
-                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                                  : 'bg-white text-gray-600 border-gray-200 hover:bg-indigo-50'
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors border flex items-center gap-1.5 ${
+                                isChosen ? colorStyle.chipSelected : colorStyle.chipUnselected
                               }`}
                             >
-                              {getFolderIcon(folder)} {folder}
+                              <span
+                                className={`w-2 h-2 rounded-full shrink-0 ${
+                                  isChosen ? 'bg-white/90' : colorStyle.dot
+                                }`}
+                              />
+                              <span>
+                                {getFolderIcon(folder)} {folder}
+                              </span>
                             </button>
                           );
                         })}
@@ -1945,7 +2135,7 @@ export default function App() {
                     }}
                     onPaste={handlePasteInExtractor}
                     placeholder="例如：大阪三天兩夜必吃！第一天晚上去道頓堀「燒肉力丸」，隔天早上吃黑門市場海鮮，下午逛心齋橋 HARBS 吃千層蛋糕，最後買老爺爺起司蛋糕當伴手禮..."
-                    className="w-full rounded-xl border border-gray-200 bg-gray-50/70 p-3 text-sm outline-none focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100 transition resize-y"
+                    className="w-full rounded-xl border border-gray-200 bg-gray-50/70 p-3 text-base sm:text-sm outline-none focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100 transition resize-y"
                   />
 
                   <input
@@ -2128,13 +2318,22 @@ export default function App() {
                     <span className="text-xs font-bold text-gray-500 flex items-center gap-1">
                       <span>📂</span> 清單分類檢視
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowNewFolderInput(prev => !prev)}
-                      className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg transition-colors"
-                    >
-                      {showNewFolderInput ? '取消新增' : '＋ 新增清單夾'}
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setShowFolderSettingsModal(true)}
+                        className="text-[11px] font-bold text-gray-700 hover:text-gray-900 bg-gray-100 hover:bg-gray-200 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1"
+                      >
+                        <span>🎨</span> 顏色設定
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowNewFolderInput(prev => !prev)}
+                        className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg transition-colors"
+                      >
+                        {showNewFolderInput ? '取消新增' : '＋ 新增清單夾'}
+                      </button>
+                    </div>
                   </div>
 
                   {showNewFolderInput && (
@@ -2143,21 +2342,45 @@ export default function App() {
                         e.preventDefault();
                         handleCreateCustomFolder();
                       }}
-                      className="mb-2.5 flex items-center gap-1.5"
+                      className="mb-2.5 rounded-xl bg-gray-50/90 border border-indigo-100 p-2.5 space-y-2"
                     >
-                      <input
-                        type="text"
-                        value={newFolderName}
-                        onChange={(e) => setNewFolderName(e.target.value)}
-                        placeholder="輸入自訂清單夾名稱（如：必吃美食）..."
-                        className="flex-1 min-w-0 rounded-xl border border-indigo-200 bg-indigo-50/40 px-3 py-1.5 text-xs outline-none focus:border-indigo-500 focus:bg-white"
-                      />
-                      <button
-                        type="submit"
-                        className="shrink-0 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 transition-colors"
-                      >
-                        建立
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          value={newFolderName}
+                          onChange={(e) => setNewFolderName(e.target.value)}
+                          placeholder="輸入自訂清單夾名稱（如：必吃美食）..."
+                          className="flex-1 min-w-0 rounded-xl border border-indigo-200 bg-white px-3 py-1.5 text-base sm:text-xs outline-none focus:border-indigo-500"
+                        />
+                        <button
+                          type="submit"
+                          className="shrink-0 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 transition-colors"
+                        >
+                          建立
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[11px] font-bold text-gray-500">標籤顏色：</span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {FOLDER_COLOR_OPTIONS.map(color => {
+                            const isSelected = newFolderColor === color.id;
+                            return (
+                              <button
+                                key={color.id}
+                                type="button"
+                                title={color.label}
+                                aria-label={`選擇${color.label}色`}
+                                onClick={() => setNewFolderColor(color.id)}
+                                className={`w-6 h-6 rounded-full ${color.dot} transition-transform flex items-center justify-center ${
+                                  isSelected ? `ring-2 ring-offset-2 ${color.swatchRing} scale-110` : 'opacity-75 hover:opacity-100'
+                                }`}
+                              >
+                                {isSelected && <span className="w-2 h-2 rounded-full bg-white" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </form>
                   )}
 
@@ -2204,6 +2427,7 @@ export default function App() {
                       const isActive = activeCollectionView === folder;
                       const isDefaultFolder = (DEFAULT_CUSTOM_FOLDERS as readonly string[]).includes(folder);
                       const count = filteredBySearch.filter(p => (p.lists || []).includes(folder)).length;
+                      const colorStyle = getFolderColor(folder);
 
                       return (
                         <div key={folder} className="shrink-0 flex items-center">
@@ -2212,18 +2436,19 @@ export default function App() {
                             onClick={() => handleSelectCollectionView(folder)}
                             className={`px-3 py-1.5 text-xs font-bold transition-all flex items-center gap-1.5 ${
                               isDefaultFolder ? 'rounded-xl' : 'rounded-l-xl'
-                            } ${
-                              isActive
-                                ? 'bg-indigo-600 text-white shadow-xs'
-                                : 'bg-indigo-50/80 text-indigo-700 hover:bg-indigo-100 ring-1 ring-indigo-200/70'
-                            }`}
+                            } ${isActive ? colorStyle.tabActive : colorStyle.tabInactive}`}
                           >
+                            <span
+                              className={`w-2 h-2 rounded-full shrink-0 ${
+                                isActive ? 'bg-white' : colorStyle.dot
+                              }`}
+                            />
                             <span>
                               {getFolderIcon(folder)} {folder}
                             </span>
                             <span
                               className={`text-[10px] px-1.5 py-0.2 rounded-full ${
-                                isActive ? 'bg-indigo-500 text-white' : 'bg-white text-indigo-600'
+                                isActive ? colorStyle.tabBadgeActive : colorStyle.tabBadgeInactive
                               }`}
                             >
                               {count}
@@ -2235,9 +2460,7 @@ export default function App() {
                               title={`移除「${folder}」清單夾`}
                               onClick={() => handleDeleteCustomFolder(folder)}
                               className={`px-1.5 py-1.5 rounded-r-xl text-[11px] font-bold transition-colors border-l ${
-                                isActive
-                                  ? 'bg-indigo-700 text-indigo-100 hover:bg-indigo-800 border-indigo-500'
-                                  : 'bg-indigo-50/80 text-indigo-400 hover:text-rose-600 hover:bg-rose-50 border-indigo-200/70 ring-1 ring-indigo-200/70'
+                                isActive ? colorStyle.tabCloseActive : colorStyle.tabCloseInactive
                               }`}
                             >
                               ×
@@ -2256,7 +2479,7 @@ export default function App() {
                     placeholder="搜尋名稱、#標籤、區域、備註 (如：#拉麵, 難波)..."
                     value={listSearchQuery}
                     onChange={(e) => setListSearchQuery(e.target.value)}
-                    className="w-full rounded-xl bg-white px-4 py-3 text-sm shadow-sm ring-1 ring-gray-200 outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                    className="w-full rounded-xl bg-white px-4 py-3 text-base outline-none shadow-sm ring-1 ring-gray-200 focus:ring-2 focus:ring-blue-500 transition-all placeholder:text-sm"
                   />
                 </div>
 
@@ -2794,7 +3017,7 @@ export default function App() {
                                                     e.target.value as 'default' | 'name' | 'rating' | 'distance'
                                                   );
                                                 }}
-                                                className="text-[11px] font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg px-2 py-1 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                                                className="text-base sm:text-[11px] font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg px-2 py-1 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 cursor-pointer"
                                               >
                                                 <option value="default">排序：預設</option>
                                                 <option value="name">名稱 (A-Z)</option>
@@ -2958,19 +3181,25 @@ export default function App() {
                                                           <span>{place.isFavorite ? '最愛' : '收藏'}</span>
                                                         </button>
 
-                                                        {(place.lists || []).map(folder => (
-                                                          <button
-                                                            key={folder}
-                                                            type="button"
-                                                            onClick={(e) => {
-                                                              e.stopPropagation();
-                                                              setFolderPickerTarget(place.id);
-                                                            }}
-                                                            className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200/80 hover:bg-indigo-100 transition-colors"
-                                                          >
-                                                            {getFolderIcon(folder)} {folder}
-                                                          </button>
-                                                        ))}
+                                                        {(place.lists || []).map(folder => {
+                                                          const colorStyle = getFolderColor(folder);
+                                                          return (
+                                                            <button
+                                                              key={folder}
+                                                              type="button"
+                                                              onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setFolderPickerTarget(place.id);
+                                                              }}
+                                                              className={`text-[11px] font-bold px-2 py-0.5 rounded-lg transition-colors flex items-center gap-1 ${colorStyle.badge}`}
+                                                            >
+                                                              <span className={`w-2 h-2 rounded-full shrink-0 ${colorStyle.dot}`} />
+                                                              <span>
+                                                                {getFolderIcon(folder)} {folder}
+                                                              </span>
+                                                            </button>
+                                                          );
+                                                        })}
 
                                                         <button
                                                           type="button"
@@ -3154,6 +3383,7 @@ export default function App() {
                   </button>
                   {customFolders.map(folder => {
                     const isChecked = editForm.lists.includes(folder);
+                    const colorStyle = getFolderColor(folder);
                     return (
                       <button
                         key={folder}
@@ -3166,13 +3396,18 @@ export default function App() {
                               : [...prev.lists, folder],
                           }))
                         }
-                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors border ${
-                          isChecked
-                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                            : 'bg-white text-gray-600 border-gray-300 hover:bg-indigo-50'
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors border flex items-center gap-1.5 ${
+                          isChecked ? colorStyle.chipSelected : colorStyle.chipUnselected
                         }`}
                       >
-                        {getFolderIcon(folder)} {folder}
+                        <span
+                          className={`w-2 h-2 rounded-full shrink-0 ${
+                            isChecked ? 'bg-white/90' : colorStyle.dot
+                          }`}
+                        />
+                        <span>
+                          {getFolderIcon(folder)} {folder}
+                        </span>
                       </button>
                     );
                   })}
@@ -3184,7 +3419,7 @@ export default function App() {
                   rows={2}
                   value={editForm.note}
                   onChange={e => setEditForm({...editForm, note: e.target.value})}
-                  className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-sm resize-none"
+                  className="w-full border border-gray-300 p-2 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-base sm:text-sm resize-none"
                   placeholder="例如：必吃抹茶芭菲、週二公休"
                 />
               </div>
@@ -3263,6 +3498,7 @@ export default function App() {
                         isBatch &&
                         !isInFolder &&
                         batchTargets.some(p => (p.lists || []).includes(folder));
+                      const colorStyle = getFolderColor(folder);
 
                       return (
                         <button
@@ -3277,14 +3513,17 @@ export default function App() {
                           }}
                           className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-sm font-bold transition-colors ${
                             isInFolder
-                              ? 'bg-indigo-50 border-indigo-400 text-indigo-700'
+                              ? colorStyle.pickerSelected
                               : partialInFolder
-                                ? 'bg-indigo-50/40 border-indigo-200 text-indigo-700'
+                                ? colorStyle.pickerPartial
                                 : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
                           }`}
                         >
-                          <span>
-                            {getFolderIcon(folder)} {folder}
+                          <span className="flex items-center gap-2">
+                            <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${colorStyle.dot}`} />
+                            <span>
+                              {getFolderIcon(folder)} {folder}
+                            </span>
                           </span>
                           <span className="text-xs">
                             {isInFolder ? '✓ 已加入' : partialInFolder ? '部分已加入' : '＋ 加入'}
@@ -3311,21 +3550,43 @@ export default function App() {
                         }
                       }
                     }}
-                    className="mt-3 pt-3 border-t border-gray-100 flex gap-1.5"
+                    className="mt-3 pt-3 border-t border-gray-100 space-y-2"
                   >
-                    <input
-                      type="text"
-                      value={newFolderName}
-                      onChange={(e) => setNewFolderName(e.target.value)}
-                      placeholder="新增清單夾名稱..."
-                      className="flex-1 min-w-0 rounded-xl border border-gray-200 px-3 py-2 text-xs outline-none focus:border-indigo-500"
-                    />
-                    <button
-                      type="submit"
-                      className="shrink-0 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-2 transition-colors"
-                    >
-                      ＋ 建立並加入
-                    </button>
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={newFolderName}
+                        onChange={(e) => setNewFolderName(e.target.value)}
+                        placeholder="新增清單夾名稱..."
+                        className="flex-1 min-w-0 rounded-xl border border-gray-200 px-3 py-2 text-base sm:text-xs outline-none focus:border-indigo-500"
+                      />
+                      <button
+                        type="submit"
+                        className="shrink-0 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-2 transition-colors"
+                      >
+                        ＋ 建立並加入
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] font-bold text-gray-500">顏色：</span>
+                      {FOLDER_COLOR_OPTIONS.map(color => {
+                        const isSelected = newFolderColor === color.id;
+                        return (
+                          <button
+                            key={color.id}
+                            type="button"
+                            title={color.label}
+                            aria-label={`選擇${color.label}色`}
+                            onClick={() => setNewFolderColor(color.id)}
+                            className={`w-5 h-5 rounded-full ${color.dot} transition-transform flex items-center justify-center ${
+                              isSelected ? `ring-2 ring-offset-1 ${color.swatchRing} scale-110` : 'opacity-75 hover:opacity-100'
+                            }`}
+                          >
+                            {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </form>
 
                   <button
@@ -3338,6 +3599,139 @@ export default function App() {
                 </>
               );
             })()}
+          </div>
+        </div>
+      )}
+
+      {/* === 🎨 自訂清單夾顏色設定視窗 (Modal) === */}
+      {showFolderSettingsModal && (
+        <div
+          className="fixed inset-0 bg-black/50 z-[110] flex items-center justify-center p-4"
+          onClick={() => setShowFolderSettingsModal(false)}
+        >
+          <div
+            className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl animate-in fade-in duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <h2 className="text-lg font-extrabold text-gray-900">🎨 清單夾顏色設定</h2>
+              <button
+                type="button"
+                onClick={() => setShowFolderSettingsModal(false)}
+                className="text-gray-400 hover:text-gray-600 font-bold text-lg px-1"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">
+              點擊色塊即可變更各清單夾標籤顏色，清單頁面與景點卡片將同步更新顯示。
+            </p>
+
+            <div className="space-y-2.5 max-h-72 overflow-y-auto pr-0.5">
+              {customFolders.map(folder => {
+                const isDefaultFolder = (DEFAULT_CUSTOM_FOLDERS as readonly string[]).includes(folder);
+                const currentColor = getFolderColor(folder);
+
+                return (
+                  <div
+                    key={folder}
+                    className="rounded-xl border border-gray-200 p-2.5 bg-gray-50/50 space-y-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span
+                        className={`inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-lg ${currentColor.badge}`}
+                      >
+                        <span className={`w-2 h-2 rounded-full ${currentColor.dot}`} />
+                        <span>
+                          {getFolderIcon(folder)} {folder}
+                        </span>
+                      </span>
+                      {!isDefaultFolder && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCustomFolder(folder)}
+                          className="text-[11px] font-bold text-rose-500 hover:text-rose-700 px-2 py-0.5 rounded hover:bg-rose-50 transition-colors"
+                        >
+                          🗑️ 移除
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {FOLDER_COLOR_OPTIONS.map(color => {
+                        const isSelected = currentColor.id === color.id;
+                        return (
+                          <button
+                            key={color.id}
+                            type="button"
+                            title={color.label}
+                            aria-label={`將「${folder}」設為${color.label}色`}
+                            onClick={() => updateFolderColor(folder, color.id)}
+                            className={`w-6 h-6 rounded-full ${color.dot} transition-transform flex items-center justify-center ${
+                              isSelected ? `ring-2 ring-offset-2 ${color.swatchRing} scale-110` : 'opacity-70 hover:opacity-100'
+                            }`}
+                          >
+                            {isSelected && <span className="w-2 h-2 rounded-full bg-white" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleCreateCustomFolder();
+              }}
+              className="mt-3 pt-3 border-t border-gray-100 space-y-2"
+            >
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  placeholder="新增自訂清單夾..."
+                  className="flex-1 min-w-0 rounded-xl border border-gray-200 px-3 py-2 text-base sm:text-xs outline-none focus:border-indigo-500"
+                />
+                <button
+                  type="submit"
+                  className="shrink-0 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-2 transition-colors"
+                >
+                  ＋ 建立
+                </button>
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] font-bold text-gray-500">顏色：</span>
+                {FOLDER_COLOR_OPTIONS.map(color => {
+                  const isSelected = newFolderColor === color.id;
+                  return (
+                    <button
+                      key={color.id}
+                      type="button"
+                      title={color.label}
+                      aria-label={`選擇${color.label}色`}
+                      onClick={() => setNewFolderColor(color.id)}
+                      className={`w-5 h-5 rounded-full ${color.dot} transition-transform flex items-center justify-center ${
+                        isSelected ? `ring-2 ring-offset-1 ${color.swatchRing} scale-110` : 'opacity-75 hover:opacity-100'
+                      }`}
+                    >
+                      {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </form>
+
+            <button
+              type="button"
+              onClick={() => setShowFolderSettingsModal(false)}
+              className="mt-4 w-full py-2.5 bg-gray-900 text-white rounded-xl text-sm font-bold hover:bg-gray-800 transition-colors"
+            >
+              完成
+            </button>
           </div>
         </div>
       )}

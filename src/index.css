@@ -2,4 +2,13 @@
 
 body {
   background-color: #f3f4f6;
+  touch-action: manipulation;
+}
+
+@media (max-width: 639px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
 }
